@@ -9,7 +9,7 @@
  * - the contribution's action opens the occupancy panel instead of submitting a
  *   message, and writes nothing to the session log;
  * - renders that panel in `conversation.input.dock`, the shipped full-width
- *   composer dock, in a three-band layout sized to stay shallow;
+ *   composer dock, as one band that reflows when the chat column narrows;
  * - the composer's occupancy button in `conversation.input.right`, immediately
  *   before the submit action, toggles the same panel with a live percentage;
  * - the account balance pill rides `conversation.composer.dock` beside the
@@ -164,33 +164,50 @@ window.__ModuleLoader__.load({
       grid: { display: 'grid', gridTemplateColumns: `repeat(${GRID_COLUMNS}, 1fr)`, gap: 2 },
       cell: { height: 5, borderRadius: 1, background: FREE_COLOR },
       /**
-       * One single-row grid: overview, chart, legend, separated by `1fr` slack
-       * columns. The four fractions split the remainder evenly, so the panel
-       * stays one band tall and its whitespace is equal everywhere.
+       * The widest arrangement: one band holding the overview, the occupancy
+       * area and the legend, with the four gaps `space-evenly` leaves around and
+       * between them equal to the four `1fr` slack columns this replaced.
+       *
+       * It wraps rather than shrinking without limit, because the grid this
+       * replaced overlapped: a container narrower than the blocks' combined
+       * minimum collapsed its `1fr` slack columns to zero while the `auto`
+       * columns kept their content, so the occupancy area was pushed over the
+       * legend the moment a side pane narrowed the chat column.
        */
       main: {
-        display: 'grid',
-        gridTemplateColumns: 'minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr)',
-        alignItems: 'center',
+        display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-evenly',
       },
       /**
        * The overview stack — title, figures, pace — centered on one axis, so the
        * longest line (the pace) reads as the block's own width rather than
        * hanging past the lines above it.
        */
-      headLeft: { gridColumn: '2', display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center', minWidth: 0 },
+      headLeft: { flex: '0 1 auto', display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center' },
       headRow: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 },
       /** The turn/step/pace line the shipped composer dock no longer shows. */
       pace: { color: 'var(--dsw-alias-label-secondary)', fontSize: 11, lineHeight: '16px', whiteSpace: 'nowrap' },
+      /**
+       * The occupancy area in the one-band arrangement: a preferred `30em` band
+       * that may shrink — never grow, so `main`'s gaps stay even — down to the
+       * width its own stats need.
+       */
       viz: {
-        gridColumn: '4', width: '30em', maxWidth: '100%',
-        display: 'flex', flexDirection: 'column', gap: 8,
+        flex: '0 1 30em', display: 'flex', flexDirection: 'column', gap: 8,
       },
-      /** A three-column legend grid: names, values, and shares align on content width. */
+      /** The same area once it holds a band of its own. */
+      vizFull: { display: 'flex', flexDirection: 'column', gap: 8, width: '100%' },
+      /**
+       * A three-column legend grid: names, values, and shares align on content
+       * width. It sizes to its content wherever it sits beside something, and
+       * centers in the full-width seat the stacked arrangement gives it.
+       */
       legendBox: {
-        gridColumn: '6', display: 'grid', gridTemplateColumns: 'auto auto auto',
-        gap: '3px 6px', alignItems: 'center',
+        flex: '0 0 auto', display: 'grid', gridTemplateColumns: 'auto auto auto',
+        gap: '3px 6px', alignItems: 'center', justifyContent: 'center',
       },
+      /** The two narrower arrangements: a stack, and the pair it starts with. */
+      stack: { display: 'flex', flexDirection: 'column', gap: 8 },
+      pair: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-evenly' },
       legendName: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 },
       legendLabel: { color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' },
       legendValue: { fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', textAlign: 'right' },
@@ -212,6 +229,55 @@ window.__ModuleLoader__.load({
         display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--dsw-alias-label-secondary)',
         fontSize: 12, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap',
       },
+    }
+
+    /**
+     * Body widths, in CSS pixels, at which the arrangement changes.
+     *
+     * `WIDE_MIN` is what the one-band arrangement wants for its even gaps without
+     * shrinking the occupancy area below its preferred `30em`; below it the
+     * overview pairs with the legend and the occupancy area takes a band of its
+     * own, and below `MEDIUM_MIN` — where even that pair no longer fits — all
+     * three stack.
+     */
+    const WIDE_MIN = 720
+    const MEDIUM_MIN = 440
+
+    /**
+     * Pick the body's arrangement for a measured width.
+     * @param width - the body's content width, `0` before it is first measured.
+     * @returns `wide`, `medium` or `narrow`.
+     */
+    function layoutFor(width) {
+      if (!(width > 0)) return 'wide'
+      if (width >= WIDE_MIN) return 'wide'
+      if (width >= MEDIUM_MIN) return 'medium'
+      return 'narrow'
+    }
+
+    /**
+     * Track one element's content width, because the panel lives in the chat
+     * column: a side pane narrowing that column resizes the panel without moving
+     * any viewport breakpoint.
+     * @returns a ref to attach to the measured element, and its width.
+     */
+    function useMeasuredWidth() {
+      const ref = React.useRef(null)
+      const [width, setWidth] = React.useState(0)
+      React.useLayoutEffect(() => {
+        const node = ref.current
+        if (node === null) return undefined
+        setWidth(node.clientWidth)
+        if (typeof ResizeObserver === 'undefined') return undefined
+        const observer = new ResizeObserver(() => {
+          setWidth(node.clientWidth)
+        })
+        observer.observe(node)
+        return () => {
+          observer.disconnect()
+        }
+      }, [])
+      return [ref, width]
     }
 
     /**
@@ -463,14 +529,16 @@ window.__ModuleLoader__.load({
 
     /**
      * The shared card body, so the composer panel and a legacy command row
-     * cannot drift apart: one row holding the overview, the occupancy area, and
-     * the composition legend, with the session's turn/step pace in the overview
-     * (this bundle hides the shipped dock that used to carry it).
-     * @param props - locale seat, the projection values, and the session stats.
+     * cannot drift apart: the overview, the occupancy area and the composition
+     * legend, arranged for the width {@link Body} measured, with the session's
+     * turn/step pace in the overview (this bundle hides the shipped dock that
+     * used to carry it).
+     * @param props - locale seat, the projection values, the session stats, the
+     * chosen arrangement, and the ref its container is measured from.
      * @returns the card's children.
      */
     function bodyChildren(props) {
-      const { t, pressure, breakdown, usage, session } = props
+      const { t, pressure, breakdown, usage, session, layout, innerRef } = props
       const used = pressure === undefined ? undefined : pressure.projectedTokens ?? pressure.pressureTokens
       const capacity = pressure === undefined ? undefined : pressure.contextWindow
       const usedPercent = share(used, capacity)
@@ -507,28 +575,47 @@ window.__ModuleLoader__.load({
         stats.push(h(StatCell, { key: 'output', label: t('output'), value: formatTokens(usage.outputTokens) }))
       }
 
-      return [
-        h('div', { key: 'main', style: S.main }, [
-          h('div', { key: 'overview', style: S.headLeft }, [
-            h('div', { key: 'titleRow', style: S.headRow }, [
-              h(Ring, { key: 'ring', percent: usedPercent }),
-              h('span', { key: 'title', style: S.title }, t('title')),
-            ]),
-            h('div', { key: 'figures', style: S.headRow }, [
-              h('span', { key: 'figure', style: S.figure }, `${formatTokens(used)} / ${formatTokens(capacity)}`),
-              usedPercent === undefined ? null : h('span', { key: 'percent', style: S.percent }, String(Math.round(usedPercent)) + '%'),
-            ]),
-            pace.length === 0 ? null : h('div', { key: 'pace', style: S.pace }, pace.join(' · ')),
-          ]),
-          h('div', { key: 'viz', style: S.viz }, [
-            h('div', { key: 'grid', style: S.grid }, gridCells(usedPercent, breakdown, total)),
-            stats.length === 0 ? null : h('div', { key: 'stats', style: S.stats }, stats),
-          ]),
-          breakdown === undefined
-            ? h('div', { key: 'legend', style: S.legendBox }, h('div', { style: S.muted }, t('noSample')))
-            : h('div', { key: 'legend', style: S.legendBox }, legend),
+      const overview = h('div', { key: 'overview', style: S.headLeft }, [
+        h('div', { key: 'titleRow', style: S.headRow }, [
+          h(Ring, { key: 'ring', percent: usedPercent }),
+          h('span', { key: 'title', style: S.title }, t('title')),
         ]),
-      ]
+        h('div', { key: 'figures', style: S.headRow }, [
+          h('span', { key: 'figure', style: S.figure }, `${formatTokens(used)} / ${formatTokens(capacity)}`),
+          usedPercent === undefined ? null : h('span', { key: 'percent', style: S.percent }, String(Math.round(usedPercent)) + '%'),
+        ]),
+        pace.length === 0 ? null : h('div', { key: 'pace', style: S.pace }, pace.join(' · ')),
+      ])
+      const viz = h('div', { key: 'viz', style: layout === 'wide' ? S.viz : S.vizFull }, [
+        h('div', { key: 'grid', style: S.grid }, gridCells(usedPercent, breakdown, total)),
+        stats.length === 0 ? null : h('div', { key: 'stats', style: S.stats }, stats),
+      ])
+      const legendBox = breakdown === undefined
+        ? h('div', { key: 'legend', style: S.legendBox }, h('div', { style: S.muted }, t('noSample')))
+        : h('div', { key: 'legend', style: S.legendBox }, legend)
+
+      /* One band where it fits; otherwise the overview pairs with the legend and
+       * the occupancy area takes the band below them; otherwise all three stack. */
+      if (layout === 'medium') {
+        return [
+          h('div', { key: 'main', ref: innerRef, style: S.stack }, [
+            h('div', { key: 'pair', style: S.pair }, [overview, legendBox]),
+            viz,
+          ]),
+        ]
+      }
+      return [h('div', { key: 'main', ref: innerRef, style: layout === 'wide' ? S.main : S.stack }, [overview, viz, legendBox])]
+    }
+
+    /**
+     * The measurable body: it owns the ref its arrangement is measured from, and
+     * re-renders the blocks for the width that ref reports.
+     * @param props - locale seat and the projection values.
+     * @returns the card's children.
+     */
+    function Body(props) {
+      const [innerRef, width] = useMeasuredWidth()
+      return bodyChildren(Object.assign({ innerRef, layout: layoutFor(width) }, props))
     }
 
     /**
@@ -549,7 +636,7 @@ window.__ModuleLoader__.load({
       if (!open) return null
       return h('div', { style: S.panel },
         h('div', { style: S.panelCard, 'data-context-usage': 'panel' },
-          bodyChildren({ t, pressure, breakdown, usage, session })))
+          h(Body, { t, pressure, breakdown, usage, session })))
     }
 
     /**
@@ -612,7 +699,7 @@ window.__ModuleLoader__.load({
           head(undefined),
           h('div', { style: S.error }, typeof outcome.text === 'string' && outcome.text.length > 0 ? outcome.text : t('failed')))
       }
-      return h('div', { style: S.card }, bodyChildren({ t, pressure, breakdown, usage, session }))
+      return h('div', { style: S.card }, h(Body, { t, pressure, breakdown, usage, session }))
     }
 
     return {
