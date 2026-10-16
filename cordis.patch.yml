@@ -1,0 +1,8 @@
+# The context-usage bundle patch over the shipped Web composition: one Host row
+# for the package. The row registers nothing; the package's `dsh.client`
+# declaration serves the Client half, which owns the `/context` command and its
+# occupancy panel.
+
+- insert:
+    - id: context-usage
+      name: '@local/dsh-context-usage'

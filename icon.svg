@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Context usage">
+  <circle cx="16" cy="16" r="11" fill="none" stroke="#E3E6EA" stroke-width="4" />
+  <circle cx="16" cy="16" r="11" fill="none" stroke="#4E7BE8" stroke-width="4"
+          stroke-dasharray="10.4 58.7" stroke-dashoffset="0" transform="rotate(-90 16 16)" />
+  <circle cx="16" cy="16" r="11" fill="none" stroke="#E8A33D" stroke-width="4"
+          stroke-dasharray="20.7 48.4" stroke-dashoffset="-10.4" transform="rotate(-90 16 16)" />
+  <circle cx="16" cy="16" r="11" fill="none" stroke="#3FA37A" stroke-width="4"
+          stroke-dasharray="6.9 62.2" stroke-dashoffset="-31.1" transform="rotate(-90 16 16)" />
+</svg>

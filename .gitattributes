@@ -1,0 +1,12 @@
+# 仓库内一律 LF，避免 Windows 上提交 CRLF 造成的 diff 噪音
+* text=auto eol=lf
+
+# PowerShell 脚本保留 CRLF（PS 5.1 对纯 LF 脚本的兼容性有坑）
+*.ps1 text eol=crlf
+
+# 二进制
+*.tgz binary
+*.zip binary
+*.png binary
+*.jpg binary
+*.ico binary
