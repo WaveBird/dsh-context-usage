@@ -73,6 +73,9 @@ window.__ModuleLoader__.load({
     /** This bundle's own stylesheet identity, cleaned up with the plugin. */
     const DOCK_STYLE_ID = '@local/dsh-context-usage/dock-override.css'
 
+    /** This bundle's outline-rail stylesheet identity. */
+    const OUTLINE_STYLE_ID = '@local/dsh-context-usage/outline.css'
+
     const zh = {
       title: '上下文用量',
       commandDescription: '查看当前会话的上下文用量与构成',
@@ -244,30 +247,21 @@ window.__ModuleLoader__.load({
       },
       /** The scrollable body inside the maximized card. */
       paneModalBody: { flex: 'auto', minHeight: 0, overflow: 'auto' },
-      /** Maximized card split: transcript on the left, outline rail on the right. */
-      paneModalMain: { flex: 'auto', minHeight: 0, display: 'flex', gap: 8, alignItems: 'stretch' },
-      /** The outline rail: a scrollable column of one dot per block. */
-      paneRail: {
-        flex: 'none', width: 18, overflowY: 'auto', overflowX: 'visible',
-        padding: '2px 0', scrollbarWidth: 'thin',
+      /** Extra right gutter on the maximized card, so the outline floats clear of the text. */
+      paneModalWithRail: { position: 'relative', paddingRight: 26 },
+      /** The rail's placement; its expansion and hover styling live in the
+       * injected stylesheet, so a hover never re-renders the row list. */
+      outlineWrap: {
+        position: 'absolute', top: 34, bottom: 10, right: 4, zIndex: 4,
+        pointerEvents: 'none',
       },
-      /** One rail row: the dot and, on hover, its caption. */
-      paneDotRow: { position: 'relative', display: 'flex', alignItems: 'center', height: 10, cursor: 'pointer' },
-      paneDot: {
-        width: 5, height: 5, borderRadius: 999, background: 'currentColor', opacity: 0.55,
-        transition: 'transform 120ms ease, opacity 120ms ease', transformOrigin: 'center',
+      /** Right-anchored, so the expanding card grows leftward into the pane. */
+      outlineCard: {
+        position: 'absolute', top: 0, right: 0,
+        pointerEvents: 'auto', display: 'flex', flexDirection: 'column', gap: 1,
+        maxHeight: '100%', overflowY: 'auto', overflowX: 'hidden',
+        scrollbarWidth: 'thin',
       },
-      paneDotHover: { transform: 'scale(2.2)', opacity: 1 },
-      paneDotActive: { transform: 'scale(2.4)', opacity: 1, boxShadow: '0 0 0 2px var(--dsw-alias-brand-primary)' },
-      /** The hovered dot's caption: floats to the left of the rail. */
-      paneDotLabel: {
-        position: 'absolute', right: 18, top: '50%', transform: 'translateY(-50%)',
-        display: 'flex', flexDirection: 'column', gap: 1, whiteSpace: 'nowrap',
-        padding: '3px 7px', borderRadius: 5, zIndex: 3, pointerEvents: 'none',
-        background: 'var(--dsw-specific-menu)', border: '1px solid var(--dsw-alias-border-l1)',
-        boxShadow: 'var(--dsw-elevation-panel)', fontSize: 11, lineHeight: '15px',
-      },
-      paneDotMeta: { color: 'var(--dsw-alias-label-tertiary)', fontVariantNumeric: 'tabular-nums' },
       /** The block a rail jump landed on. */
       paneBlockActive: { background: 'var(--dsw-alias-interactive-bg-hover-solid)', borderRadius: 4 },
       /** One conversation block inside the detail pane: its own header row. */
@@ -952,33 +946,32 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * One entry of the maximized pane's navigation rail: a dot that grows and
-     * names its block on hover, and scrolls the pane to that block on click.
-     * @param props - block index, its `tag · label` caption, the active state,
-     * and the jump handler.
-     * @returns the rail row.
+     * One entry of the maximized pane's outline rail, in the shape Cherry
+     * Studio's message outline uses: a short rounded bar whose width carries the
+     * entry's role weight, and — while the rail is expanded — the entry's own
+     * caption beside it. Expansion, bar emphasis and text color are pure CSS
+     * (`:hover` on the rail card), so the labels appear the instant the pointer
+     * reaches the rail and the 950-row rail never re-renders for a hover.
+     * @param props - block index, caption and meta text, role color and bar
+     * width, the active state, and the jump handler.
+     * @returns the outline row.
      */
-    function PaneDot(props) {
-      const [hover, setHover] = React.useState(false)
+    function OutlineRow(props) {
       return h('div', {
-        style: S.paneDotRow, 'data-context-usage': 'pane-dot', 'data-dot': props.index,
-        onMouseEnter: () => setHover(true),
-        onMouseLeave: () => setHover(false),
+        className: 'dsh-cu-outline-row',
+        'data-context-usage': 'pane-dot', 'data-dot': props.index,
+        'data-active': props.active ? 'true' : undefined,
         onClick: () => props.onJump(props.index),
         role: 'button', tabIndex: -1, title: props.caption,
       }, [
         h('span', {
-          key: 'dot',
-          style: Object.assign({}, S.paneDot, { color: props.color },
-            hover ? S.paneDotHover : null,
-            props.active ? S.paneDotActive : null),
+          key: 'bar', className: 'dsh-cu-outline-bar',
+          style: { width: props.width, background: props.color },
         }),
-        hover || props.active ? h('span', {
-          key: 'caption', style: S.paneDotLabel,
-        }, [
-          h('span', { key: 'text', style: { color: props.color, fontWeight: 600 } }, props.caption),
-          h('span', { key: 'meta', style: S.paneDotMeta }, props.meta),
-        ]) : null,
+        h('span', { key: 'caption', className: 'dsh-cu-outline-text' }, [
+          h('span', { key: 'label', className: 'dsh-cu-outline-label' }, props.caption),
+          h('span', { key: 'meta', className: 'dsh-cu-outline-meta' }, props.meta),
+        ]),
       ])
     }
 
@@ -1070,29 +1063,34 @@ window.__ModuleLoader__.load({
         }, '✕'),
       ])
       if (maximized) {
-        /* The transcript's outline: one dot per block down the right edge, so a
-         * long conversation can be jumped through without scrolling. */
+        /* The transcript's outline, in Cherry Studio's shape: a rail of short
+         * rounded bars down the right edge that expands into a labeled list the
+         * instant the pointer arrives, and jumps to a block on click. */
         const rail = isBlocks
-          ? h('div', { key: 'rail', style: S.paneRail, 'data-context-usage': 'pane-rail' },
-              content.map((block, index) => h(PaneDot, {
-                key: index, index,
-                caption: block.label !== undefined ? `${block.tag} · ${block.label}` : block.tag,
-                meta: `${block.chars} chars ≈ ${formatTokens(block.chars / 4)} tokens`,
-                color: block.color,
-                active: activeIndex === index,
-                onJump: jumpTo,
-              })))
+          ? h('div', {
+              key: 'rail', className: 'dsh-cu-outline-wrap', style: S.outlineWrap,
+              'data-context-usage': 'pane-rail',
+            }, h('div', {
+              key: 'card', className: 'dsh-cu-outline-card', style: S.outlineCard,
+              'data-context-usage': 'pane-rail-card',
+            }, content.map((block, index) => h(OutlineRow, {
+              key: index, index,
+              caption: block.label !== undefined ? `${block.tag} · ${block.label}` : block.tag,
+              meta: `${block.chars} chars ≈ ${formatTokens(block.chars / 4)} tok`,
+              color: block.color,
+              width: block.tag.indexOf('tool') === 0 ? 8 : block.tag === 'assistant' ? 12 : block.tag === 'context' ? 10 : 16,
+              active: activeIndex === index,
+              onJump: jumpTo,
+            }))))
           : null
         const overlay = h('div', {
           key: 'overlay', style: S.paneOverlay, 'data-context-usage': props.marker,
           onMouseDown: (event) => { if (event.target === event.currentTarget && props.onClose !== undefined) props.onClose() },
         }, h('div', {
-          ref: cardRef, style: S.paneModal, onMouseEnter: props.onEnter, onMouseLeave: props.onLeave,
+          ref: cardRef, style: Object.assign({}, S.paneModal, isBlocks ? S.paneModalWithRail : null),
+          onMouseEnter: props.onEnter, onMouseLeave: props.onLeave,
           'data-context-usage': 'pane-modal', role: 'dialog', 'aria-modal': true,
-        }, [bar, h('div', { key: 'main', style: S.paneModalMain }, [
-          h('div', { key: 'body', ref: bodyRef, style: S.paneModalBody }, body),
-          rail,
-        ])]))
+        }, [bar, h('div', { key: 'body', ref: bodyRef, style: S.paneModalBody }, body), rail]))
         return ReactDOM !== undefined && typeof ReactDOM.createPortal === 'function'
           ? ReactDOM.createPortal(overlay, document.body)
           : overlay
@@ -1436,6 +1434,41 @@ window.__ModuleLoader__.load({
         const tr = ctx.locale.bind(NS)
         const sessions = ctx.sessions
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'context-usage: dictionaries')
+
+        /* The maximized pane's outline rail, after Cherry Studio's message
+         * outline: a column of short rounded bars that expands into a labeled
+         * list on hover, with no timer and no React state per row. */
+        ctx.effect(() => {
+          const tag = document.createElement('style')
+          tag.dataset.plugin = '@local/dsh-context-usage'
+          tag.dataset.pluginCss = OUTLINE_STYLE_ID
+          tag.textContent = `
+.dsh-cu-outline-card{padding:4px 3px;border-radius:10px;border:1px solid transparent;
+  transition:background 160ms ease-out,border-color 160ms ease-out,box-shadow 160ms ease-out,padding 160ms ease-out}
+.dsh-cu-outline-card:hover{padding:8px 10px;background:var(--dsw-specific-menu);
+  border-color:var(--dsw-alias-border-l1);box-shadow:0 0 10px 0 rgba(128,128,128,.2)}
+.dsh-cu-outline-row{display:flex;align-items:center;gap:8px;flex:0 0 auto;height:8px;
+  cursor:pointer;transition:height 160ms ease-out}
+.dsh-cu-outline-card:hover .dsh-cu-outline-row{height:22px}
+.dsh-cu-outline-bar{flex:none;height:3px;border-radius:2px;opacity:.5;
+  transition:opacity 160ms ease-out,transform 160ms ease-out}
+.dsh-cu-outline-row:hover .dsh-cu-outline-bar{opacity:1;transform:scaleY(1.8)}
+.dsh-cu-outline-row[data-active="true"] .dsh-cu-outline-bar{opacity:1;
+  box-shadow:0 0 0 2px var(--dsw-alias-brand-primary)}
+.dsh-cu-outline-text{display:none;align-items:baseline;gap:6px;min-width:0;max-width:260px;
+  white-space:nowrap;overflow:hidden;font-size:12px;line-height:18px;
+  color:var(--dsw-alias-label-tertiary)}
+.dsh-cu-outline-card:hover .dsh-cu-outline-text{display:flex}
+.dsh-cu-outline-row:hover .dsh-cu-outline-text{color:var(--dsw-alias-label-primary)}
+.dsh-cu-outline-label{overflow:hidden;text-overflow:ellipsis}
+.dsh-cu-outline-meta{flex:none;font-size:11px;font-variant-numeric:tabular-nums;
+  color:var(--dsw-alias-label-tertiary)}
+`
+          document.head.appendChild(tag)
+          return () => {
+            tag.remove()
+          }
+        }, 'context-usage: outline rail stylesheet')
 
         ctx.effect(() => ctx.commandUi.register({
           name: 'context',
