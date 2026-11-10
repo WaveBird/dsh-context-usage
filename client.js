@@ -163,7 +163,8 @@ window.__ModuleLoader__.load({
         fontSize: 13, lineHeight: '20px',
       },
       head: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 },
-      /** Hover tooltip anchored to the composer occupancy button. */
+      /** Hover tooltip anchored to the composer occupancy button; also the
+       * anchor for its detached right-side detail pane. */
       tip: {
         position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, zIndex: 50,
         boxSizing: 'border-box', minWidth: 200, whiteSpace: 'nowrap',
@@ -179,12 +180,18 @@ window.__ModuleLoader__.load({
       tipHead: { fontWeight: 600, marginBottom: 4 },
       tipToggleRow: { cursor: 'pointer', borderRadius: 4, padding: '1px 2px', margin: '0 -2px' },
       tipChevron: { color: 'var(--dsw-alias-label-tertiary)', flex: 'none', width: 12, textAlign: 'right' },
-      tipContent: {
-        margin: '4px 0 0', padding: '6px 8px', borderRadius: 6,
-        background: 'var(--dsw-alias-bg-layer-2)', border: '1px solid var(--dsw-alias-border-l1)',
-        maxHeight: 220, maxWidth: 380, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+      /* The detached detail pane: floats to the right of the tooltip card,
+       * vertically aligned with its top; it occupies no layout space, so the
+       * composition rows never reflow when content appears. */
+      tipPane: {
+        position: 'absolute', top: 0, left: 'calc(100% + 10px)', zIndex: 51,
+        margin: 0, padding: '6px 8px', borderRadius: 6,
+        width: 320, maxHeight: 260, overflow: 'auto',
+        whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
+        background: 'var(--dsw-specific-menu)', backdropFilter: 'var(--dsw-menu-backdrop-filter)',
+        boxShadow: 'var(--dsw-elevation-panel)', border: '1px solid var(--dsw-alias-border-l1)',
         fontSize: 11, lineHeight: '16px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-        color: 'var(--dsw-alias-label-primary)', userSelect: 'text',
+        color: 'var(--dsw-alias-label-primary)',
       },
       title: { fontWeight: 600, flex: 'none' },
       spacer: { flex: 'auto' },
@@ -756,35 +763,28 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * One hover-revealed content section of the hover tooltip: the summary row
-     * reveals the full content in a scrollable pane while the pointer rests on
-     * it, and hides again when the pointer moves off.
+     * One hover-highlighted content section of the hover tooltip: the row
+     * highlights and shows a chevron while the pointer rests on it; the full
+     * content renders in a detached pane to the right (see {@link S.tipPane}),
+     * so revealing content never reflows the tooltip itself.
      * @param props - label, value text, hover state, enter/leave handlers, and
-     * the revealed content text.
-     * @returns the section.
+     * whether content is revealable.
+     * @returns the section row.
      */
     function TipSection(props) {
-      const revealable = props.content !== undefined && props.content !== ''
+      const revealable = props.revealable === true
       return h('div', {
-        style: { minWidth: 0 },
+        style: Object.assign({}, S.tipRow, revealable ? S.tipToggleRow : null),
+        title: revealable ? props.title : undefined,
         onMouseEnter: props.onEnter,
         onMouseLeave: props.onLeave,
+        'data-context-usage': 'tip-section',
       }, [
-        h('div', {
-          key: 'row',
-          style: Object.assign({}, S.tipRow, revealable ? S.tipToggleRow : null),
-          title: revealable ? props.title : undefined,
-          'data-context-usage': 'tip-section',
-        }, [
-          h('span', { key: 'name', style: S.tipName }, [h(Glyph, { kind: props.kind, color: props.color }), props.label]),
-          h('span', { key: 'value', style: S.tipValue }, props.value),
-          revealable ? h('span', {
-            key: 'chev', style: S.tipChevron,
-          }, props.hovered ? '▾' : '▸') : null,
-        ]),
-        props.hovered && revealable ? h('pre', {
-          key: 'content', style: S.tipContent, 'data-context-usage': 'tip-content',
-        }, props.content) : null,
+        h('span', { key: 'name', style: S.tipName }, [h(Glyph, { kind: props.kind, color: props.color }), props.label]),
+        h('span', { key: 'value', style: S.tipValue }, props.value),
+        revealable ? h('span', {
+          key: 'chev', style: S.tipChevron,
+        }, props.hovered ? '▾' : '▸') : null,
       ])
     }
 
@@ -805,8 +805,9 @@ window.__ModuleLoader__.load({
       const usedPercent = share(used, capacity)
       const total = breakdown === undefined ? 0 : breakdown.systemTokens + breakdown.toolsTokens + breakdown.messageTokens
       const [hoveredRow, setHoveredRow] = React.useState(null)
-      const toggle = (key, on) => setHoveredRow((current) => (on ? key : current === key ? null : current))
+      const hover = (key, on) => setHoveredRow((current) => (on ? key : current === key ? null : current))
       const rows = []
+      let paneContent = undefined
       for (const row of ROWS) {
         const value = breakdown === undefined ? undefined : breakdown[row.key]
         const content = row.key === 'systemTokens'
@@ -819,11 +820,12 @@ window.__ModuleLoader__.load({
           kind: row.kind, label: t(row.label), color: row.color,
           value: formatTokens(value),
           hovered: hoveredRow === row.key,
-          onEnter: content === undefined || content === '' ? undefined : () => toggle(row.key, true),
-          onLeave: content === undefined || content === '' ? undefined : () => toggle(row.key, false),
+          revealable: content !== undefined && content !== '',
+          onEnter: content === undefined || content === '' ? undefined : () => hover(row.key, true),
+          onLeave: content === undefined || content === '' ? undefined : () => hover(row.key, false),
           title: t('tipExpandHint'),
-          content,
-        }, ))
+        }))
+        if (hoveredRow === row.key && content !== undefined && content !== '') paneContent = content
       }
       if (used !== undefined && capacity !== undefined) {
         const free = Math.max(0, capacity - used)
@@ -840,6 +842,12 @@ window.__ModuleLoader__.load({
           usedPercent === undefined ? '' : `  ${percentText(usedPercent)}`,
         ]),
         breakdown === undefined ? h('div', { style: S.muted }, t('noSample')) : rows,
+        /* The detached detail pane: anchored to the tooltip's right edge, laid
+         * out beside it rather than inside it, so revealing content never
+         * reflows the composition rows. */
+        paneContent !== undefined ? h('pre', {
+          key: 'pane', style: S.tipPane, 'data-context-usage': 'tip-content',
+        }, paneContent) : null,
       ])
     }
 
