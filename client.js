@@ -27,6 +27,16 @@ window.__ModuleLoader__.load({
   id: '@local/dsh-context-usage',
   factory(require) {
     const React = require('react')
+    /* The maximized pane portals to the document body: every surface it would
+     * otherwise sit in carries a backdrop filter, which makes that ancestor the
+     * containing block for a fixed overlay and would mis-place it. */
+    const ReactDOM = (() => {
+      try {
+        return require('react-dom')
+      } catch (error) {
+        return undefined
+      }
+    })()
     const h = React.createElement
 
     /** Client locale namespace for this bundle's visible text. */
@@ -187,9 +197,15 @@ window.__ModuleLoader__.load({
       paneAnchor: { position: 'relative' },
       /* The detached detail pane: floats to the right of the tooltip card,
        * vertically aligned with its top; it occupies no layout space, so the
-       * composition rows never reflow when content appears. */
+       * composition rows never reflow when content appears. The wrapper's
+       * transparent left padding bridges the gap to the row, so the pointer can
+       * cross from one to the other without the pane closing. */
       tipPane: {
-        position: 'absolute', top: 0, left: 'calc(100% + 10px)', zIndex: 51,
+        position: 'absolute', top: 0, left: '100%', zIndex: 51,
+        paddingLeft: 12,
+      },
+      /** The pane's visible card. */
+      paneCard: {
         margin: 0, padding: '6px 8px', borderRadius: 6,
         width: 320, maxHeight: 260, overflow: 'auto',
         whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
@@ -198,6 +214,36 @@ window.__ModuleLoader__.load({
         fontSize: 11, lineHeight: '16px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
         color: 'var(--dsw-alias-label-primary)',
       },
+      /** The pane's header strip, holding the maximize control. */
+      paneBar: {
+        display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6,
+        margin: '-6px -8px 4px', padding: '2px 4px 2px 8px',
+        borderBottom: '1px solid var(--dsw-alias-border-l1)',
+        position: 'sticky', top: -6, background: 'var(--dsw-specific-menu)', zIndex: 1,
+      },
+      paneBarTitle: { flex: 'auto', color: 'var(--dsw-alias-label-tertiary)', fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      paneButton: {
+        flex: 'none', display: 'grid', placeItems: 'center', width: 20, height: 20,
+        padding: 0, border: 'none', borderRadius: 4, background: 'transparent', cursor: 'pointer',
+        color: 'var(--dsw-alias-label-secondary)', fontFamily: 'inherit', fontSize: 12, lineHeight: 1,
+      },
+      /** Maximized pane: a centered fixed overlay over the whole viewport. */
+      paneOverlay: {
+        position: 'fixed', inset: 0, zIndex: 200, display: 'grid', placeItems: 'center',
+        background: 'rgba(0, 0, 0, 0.42)',
+      },
+      paneModal: {
+        margin: 0, boxSizing: 'border-box', display: 'flex', flexDirection: 'column',
+        width: 'min(880px, 92vw)', height: 'min(78vh, 760px)', overflow: 'hidden',
+        padding: '8px 12px 12px', borderRadius: 'var(--dsw-radius-lg)',
+        whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
+        background: 'var(--dsw-specific-menu)', backdropFilter: 'var(--dsw-menu-backdrop-filter)',
+        boxShadow: 'var(--dsw-elevation-panel)', border: '1px solid var(--dsw-alias-border-l1)',
+        fontSize: 12, lineHeight: '18px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+        color: 'var(--dsw-alias-label-primary)',
+      },
+      /** The scrollable body inside the maximized card. */
+      paneModalBody: { flex: 'auto', minHeight: 0, overflow: 'auto' },
       /** One conversation block inside the detail pane: its own header row. */
       paneBlock: { margin: '0 0 6px', whiteSpace: 'pre-wrap' },
       paneBlockHead: { display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 2, position: 'sticky', top: -6, background: 'var(--dsw-specific-menu)', margin: '0 -8px 2px', padding: '2px 8px' },
@@ -694,20 +740,19 @@ window.__ModuleLoader__.load({
       }
 
       const legend = []
-      let paneContent = undefined
       for (const row of ROWS) {
         const value = breakdown === undefined ? undefined : breakdown[row.key]
         const content = CONTENT_BY_KEY[row.key]
+        const revealable = content !== undefined && content !== ''
         legend.push(h(LegendCell, {
           key: row.key, kind: row.kind, label: t(row.label), color: row.color,
           value: formatTokens(value), percent: share(value, capacity),
           content,
           hovered: hoveredLegend === row.key,
-          onEnter: content === undefined || content === '' ? undefined : () => onLegendHover(row.key, true),
-          onLeave: content === undefined || content === '' ? undefined : () => onLegendHover(row.key, false),
+          onEnter: revealable ? () => onLegendHover(row.key, true) : undefined,
+          onLeave: revealable ? () => onLegendHover(row.key, false) : undefined,
           hint: t('tipExpandHint'),
         }))
-        if (hoveredLegend === row.key && content !== undefined && content !== '') paneContent = content
       }
       if (used !== undefined && capacity !== undefined) {
         const free = Math.max(0, capacity - used)
@@ -746,7 +791,16 @@ window.__ModuleLoader__.load({
        * the occupancy area takes the band below them; otherwise all three stack.
        * The hovered legend's detail pane renders beside the whole card, so it
        * never reflows the panel's own layout. */
-      const pane = h(DetailPane, { key: 'pane', marker: 'panel-pane', content: paneContent })
+      const pane = h(DetailPane, {
+        key: 'pane',
+        marker: 'panel-pane',
+        title: hoveredLegend === null ? '' : t((ROWS.find((row) => row.key === hoveredLegend) || ROWS[0]).label),
+        content: hoveredLegend === null ? undefined : CONTENT_BY_KEY[hoveredLegend],
+        onEnter: props.onLegendEnter,
+        onLeave: props.onLegendLeave,
+        onClose: props.onLegendClose,
+        onPin: props.onLegendPin,
+      })
       if (layout === 'medium') {
         return [
           h('div', { key: 'main', ref: innerRef, style: Object.assign({}, S.stack, S.paneAnchor) }, [
@@ -787,12 +841,20 @@ window.__ModuleLoader__.load({
       const session = read('sessionStats')
       const sessions = props ? props.sessions : undefined
       const detailed = useDetailedContent(sessions, sessionId)
-      const [hoveredLegend, setHoveredLegend] = React.useState(null)
-      const hoverLegend = (key, on) => setHoveredLegend((current) => (on ? key : current === key ? null : current))
+      const reveal = usePaneReveal()
+      const hoverLegend = (key, on) => (on ? reveal.reveal(key) : reveal.scheduleClose())
       if (!open) return null
       return h('div', { style: S.panel },
         h('div', { style: S.panelCard, 'data-context-usage': 'panel' },
-          h(Body, { t, pressure, breakdown, usage, session, detailed, hoveredLegend, onLegendHover: hoverLegend })))
+          h(Body, {
+            t, pressure, breakdown, usage, session, detailed,
+            hoveredLegend: reveal.rowKey,
+            onLegendHover: hoverLegend,
+            onLegendEnter: reveal.cancel,
+            onLegendLeave: reveal.scheduleClose,
+            onLegendClose: reveal.close,
+            onLegendPin: reveal.setPinned,
+          })))
     }
 
     /**
@@ -864,18 +926,88 @@ window.__ModuleLoader__.load({
      * `pre` for string content, or one {@link MessageBlock} per entry for the
      * conversation transcript, so each message's share of `messageTokens` is
      * visible in place.
-     * @param props - marker attribute value, style key, and the content (string
-     * or `{tag, color, text, chars}` blocks).
+     *
+     * The pointer can travel from the row into the pane: the wrapper's
+     * transparent padding bridges the gap and the pane reports its own
+     * enter/leave so the caller's delayed close cancels while content is read.
+     * The maximize control re-anchors the same content as a centered overlay;
+     * clicking outside the card closes the pane in either arrangement.
+     * @param props - marker attribute value, content (string or blocks), title,
+     * the caller's enter/leave handlers, and its close handler.
      * @returns the pane element, or null without content.
      */
     function DetailPane(props) {
-      if (props.content === undefined) return null
-      const body = Array.isArray(props.content)
-        ? props.content.map((block, index) => h(MessageBlock, {
+      const [maximized, setMaximized] = React.useState(false)
+      const cardRef = React.useRef(undefined)
+      const content = props.content
+      /* Maximizing pins the pane: the caller keeps it open and stops scheduling
+       * its own close, so the overlay survives the pointer leaving the row. */
+      const setMax = (value) => {
+        setMaximized(value)
+        if (props.onPin !== undefined) props.onPin(value)
+      }
+      /* Clicking outside the card (and outside any owning row) closes the pane;
+       * Escape does the same while maximized. */
+      React.useEffect(() => {
+        if (content === undefined) return
+        const onPointerDown = (event) => {
+          const card = cardRef.current
+          if (card !== undefined && card !== null && card.contains(event.target)) return
+          if (event.target instanceof Element && event.target.closest('[data-context-usage="tip-section"], [data-context-usage="legend-cell"]') !== null) return
+          if (props.onClose !== undefined) props.onClose()
+        }
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape' && props.onClose !== undefined) props.onClose()
+        }
+        document.addEventListener('mousedown', onPointerDown, true)
+        document.addEventListener('keydown', onKeyDown, true)
+        return () => {
+          document.removeEventListener('mousedown', onPointerDown, true)
+          document.removeEventListener('keydown', onKeyDown, true)
+        }
+      }, [content === undefined, props.onClose])
+      /* A closed pane never reopens maximized. */
+      React.useEffect(() => {
+        if (content === undefined && maximized) setMax(false)
+      }, [content === undefined, maximized])
+      if (content === undefined) return null
+      const body = Array.isArray(content)
+        ? content.map((block, index) => h(MessageBlock, {
             key: index, tag: block.tag, color: block.color, chars: block.chars, text: block.text, label: block.label,
           }))
-        : props.content
-      return h('div', { style: S.tipPane, 'data-context-usage': props.marker }, body)
+        : content
+      const bar = h('div', { key: 'bar', style: S.paneBar }, [
+        h('span', { key: 'title', style: S.paneBarTitle }, props.title === undefined ? '' : props.title),
+        h('button', {
+          key: 'max', type: 'button', style: S.paneButton,
+          title: maximized ? '还原' : '最大化',
+          'aria-label': maximized ? '还原' : '最大化',
+          'data-context-usage': 'pane-maximize',
+          onClick: () => setMax(!maximized),
+        }, maximized ? '⤡' : '⤢'),
+        h('button', {
+          key: 'close', type: 'button', style: S.paneButton,
+          title: '关闭', 'aria-label': '关闭',
+          'data-context-usage': 'pane-close',
+          onClick: () => { if (props.onClose !== undefined) props.onClose() },
+        }, '✕'),
+      ])
+      if (maximized) {
+        const overlay = h('div', {
+          key: 'overlay', style: S.paneOverlay, 'data-context-usage': props.marker,
+          onMouseDown: (event) => { if (event.target === event.currentTarget && props.onClose !== undefined) props.onClose() },
+        }, h('div', {
+          ref: cardRef, style: S.paneModal, onMouseEnter: props.onEnter, onMouseLeave: props.onLeave,
+          'data-context-usage': 'pane-modal', role: 'dialog', 'aria-modal': true,
+        }, [bar, h('div', { key: 'body', style: S.paneModalBody }, body)]))
+        return ReactDOM !== undefined && typeof ReactDOM.createPortal === 'function'
+          ? ReactDOM.createPortal(overlay, document.body)
+          : overlay
+      }
+      return h('div', {
+        key: 'wrap', style: S.tipPane, 'data-context-usage': props.marker,
+        onMouseEnter: props.onEnter, onMouseLeave: props.onLeave,
+      }, h('div', { ref: cardRef, style: S.paneCard, 'data-context-usage': 'pane-card' }, [bar, body]))
     }
 
     /**
@@ -997,6 +1129,44 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Reveal state for one detail pane: which row owns it, and whether a close
+     * is pending. Leaving a row does not close the pane at once — it schedules
+     * the close half a second later, and entering the pane itself cancels that
+     * timer, so the pointer can travel from the row into the pane and read it.
+     * @returns the active row key, the close/enter handlers, and the controller.
+     */
+    function usePaneReveal() {
+      const [rowKey, setRowKey] = React.useState(null)
+      const [pinned, setPinned] = React.useState(false)
+      const timer = React.useRef(undefined)
+      const cancel = () => {
+        if (timer.current !== undefined) {
+          window.clearTimeout(timer.current)
+          timer.current = undefined
+        }
+      }
+      const reveal = (key) => {
+        cancel()
+        setRowKey(key)
+      }
+      const scheduleClose = () => {
+        cancel()
+        if (pinned) return
+        timer.current = window.setTimeout(() => {
+          timer.current = undefined
+          setRowKey(null)
+        }, 500)
+      }
+      const close = () => {
+        cancel()
+        setPinned(false)
+        setRowKey(null)
+      }
+      React.useEffect(() => () => cancel(), [])
+      return { rowKey, pinned, setPinned, reveal, scheduleClose, cancel, close }
+    }
+
+    /**
      * The hover tooltip the composer's occupancy button shows after a short
      * dwell: the composition legend (system / tools / messages / free) with the
      * system prompt and tool catalog expandable in place, mirroring the panel's
@@ -1012,29 +1182,28 @@ window.__ModuleLoader__.load({
       const capacity = pressure === undefined ? undefined : pressure.contextWindow
       const usedPercent = share(used, capacity)
       const total = breakdown === undefined ? 0 : breakdown.systemTokens + breakdown.toolsTokens + breakdown.messageTokens
-      const [hoveredRow, setHoveredRow] = React.useState(null)
-      const hover = (key, on) => setHoveredRow((current) => (on ? key : current === key ? null : current))
+      const reveal = usePaneReveal()
+      const hoveredRow = reveal.rowKey
       const CONTENT_BY_KEY = {
         systemTokens: systemText === undefined || systemText === '' ? undefined : systemText,
         toolsTokens: toolNames === undefined || toolNames.length === 0 ? undefined : toolNames.join('\n'),
         messageTokens: conversationBlocks === undefined || conversationBlocks.length === 0 ? undefined : conversationBlocks,
       }
       const rows = []
-      let paneContent = undefined
       for (const row of ROWS) {
         const value = breakdown === undefined ? undefined : breakdown[row.key]
         const content = CONTENT_BY_KEY[row.key]
+        const revealable = content !== undefined && content !== ''
         rows.push(h(TipSection, {
           key: row.key,
           kind: row.kind, label: t(row.label), color: row.color,
           value: formatTokens(value),
           hovered: hoveredRow === row.key,
-          revealable: content !== undefined && content !== '',
-          onEnter: content === undefined || content === '' ? undefined : () => hover(row.key, true),
-          onLeave: content === undefined || content === '' ? undefined : () => hover(row.key, false),
+          revealable,
+          onEnter: revealable ? () => reveal.reveal(row.key) : undefined,
+          onLeave: revealable ? reveal.scheduleClose : undefined,
           title: t('tipExpandHint'),
         }))
-        if (hoveredRow === row.key && content !== undefined && content !== '') paneContent = content
       }
       if (used !== undefined && capacity !== undefined) {
         const free = Math.max(0, capacity - used)
@@ -1045,7 +1214,7 @@ window.__ModuleLoader__.load({
             share(free, capacity) === undefined ? '' : percentText(share(free, capacity))),
         ]))
       }
-      return h('div', { style: S.tip, onMouseEnter: props.onEnter, onMouseLeave: props.onLeave, 'data-context-usage': 'tip' }, [
+      return h('div', { style: S.tip, onMouseEnter: () => { reveal.cancel(); if (props.onEnter !== undefined) props.onEnter() }, onMouseLeave: props.onLeave, 'data-context-usage': 'tip' }, [
         h('div', { key: 'head', style: S.tipHead }, [
           `${t('tipUsed')}  ${formatTokens(used)} / ${formatTokens(capacity)}`,
           usedPercent === undefined ? '' : `  ${percentText(usedPercent)}`,
@@ -1054,7 +1223,19 @@ window.__ModuleLoader__.load({
         /* The detached detail pane: anchored to the tooltip's right edge, laid
          * out beside it rather than inside it, so revealing content never
          * reflows the composition rows. */
-        h(DetailPane, { key: 'pane', marker: 'tip-content', content: paneContent }),
+        h(DetailPane, {
+          key: 'pane',
+          marker: 'tip-content',
+          title: hoveredRow === null ? '' : t((ROWS.find((row) => row.key === hoveredRow) || ROWS[0]).label),
+          content: hoveredRow === null ? undefined : CONTENT_BY_KEY[hoveredRow],
+          onEnter: reveal.cancel,
+          onLeave: reveal.scheduleClose,
+          onClose: reveal.close,
+          onPin: (on) => {
+            reveal.setPinned(on)
+            if (props.onPin !== undefined) props.onPin(on)
+          },
+        }),
       ])
     }
 
@@ -1074,6 +1255,8 @@ window.__ModuleLoader__.load({
       const [hover, setHover] = React.useState(false)
       const [tipOpen, setTipOpen] = React.useState(false)
       const tipTimer = React.useRef(undefined)
+      /** Whether the tooltip's detail pane is maximized (and so pinned open). */
+      const pinnedRef = React.useRef(false)
       const { usedPercent } = occupancyOf(read)
       React.useEffect(() => () => {
         if (tipTimer.current !== undefined) window.clearTimeout(tipTimer.current)
@@ -1086,6 +1269,9 @@ window.__ModuleLoader__.load({
       const leave = () => {
         setHover(false)
         if (tipTimer.current !== undefined) window.clearTimeout(tipTimer.current)
+        /* A maximized pane owns the screen until it is closed; the tooltip must
+         * not unmount underneath it. */
+        if (pinnedRef.current) return
         tipTimer.current = window.setTimeout(() => setTipOpen(false), 150)
       }
       const cancelTipClose = () => {
@@ -1114,7 +1300,7 @@ window.__ModuleLoader__.load({
           h(Ring, { key: 'ring', percent: usedPercent }),
           usedPercent === undefined ? null : h('span', { key: 'text' }, `${Math.round(usedPercent)}%`),
         ]),
-        tipOpen && !open ? h(ContextTip, { key: 'tip', t, pressure, breakdown, systemText, toolNames, conversationBlocks: detailed.conversationBlocks, onEnter: cancelTipClose, onLeave: leave }) : null,
+        tipOpen && !open ? h(ContextTip, { key: 'tip', t, pressure, breakdown, systemText, toolNames, conversationBlocks: detailed.conversationBlocks, onEnter: cancelTipClose, onLeave: leave, onPin: (on) => { pinnedRef.current = on } }) : null,
       ])
     }
 
