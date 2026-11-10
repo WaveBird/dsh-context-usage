@@ -139,6 +139,21 @@ window.__ModuleLoader__.load({
       { key: 'messageTokens', label: 'messages', kind: 'messages', color: 'var(--dsw-alias-state-success-primary)' },
     ]
 
+    /**
+     * Role tints for one transcript block. These are content colors, not state
+     * colors: `state-idle-primary` is near-white (#d4d4d4) and
+     * `state-danger-primary` resolves to near-black in this theme, so the state
+     * ramp cannot distinguish a covered tool call from a failed one. Each role
+     * instead takes a hue with real contrast against both pane backgrounds.
+     */
+    const ROLE_COLOR = {
+      user: 'var(--dsw-alias-state-business-primary)',
+      assistant: 'var(--dsw-alias-state-success-primary)',
+      context: 'var(--dsw-alias-state-warn-primary)',
+      tool: 'var(--dsw-alias-label-tertiary)',
+      toolFailed: 'var(--dsw-alias-state-error-primary)',
+    }
+
     /** Unoccupied-cell tint. */
     const FREE_COLOR = 'var(--dsw-alias-state-idle-primary)'
 
@@ -264,7 +279,10 @@ window.__ModuleLoader__.load({
       paneBlock: { margin: '0 0 6px', whiteSpace: 'pre-wrap' },
       paneBlockHead: { display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 2, position: 'sticky', top: -6, background: 'var(--dsw-specific-menu)', margin: '0 -8px 2px', padding: '2px 8px' },
       paneBlockRole: { fontWeight: 600 },
-      paneBlockChars: { color: 'var(--dsw-alias-label-tertiary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' },
+      paneBlockChars: {
+        color: 'var(--dsw-alias-label-secondary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap',
+        padding: '0 6px', borderRadius: 999, background: 'var(--dsw-alias-interactive-bg-hover-solid)',
+      },
       title: { fontWeight: 600, flex: 'none' },
       spacer: { flex: 'auto' },
       figure: { color: 'var(--dsw-alias-label-secondary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' },
@@ -1190,14 +1208,14 @@ window.__ModuleLoader__.load({
           : `#${event.seq}`
         if (event.type === 'user/message') {
           const injected = message.source && message.source.kind !== 'user'
-          push(injected ? 'context' : 'user', injected ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-brand-primary)', text, where)
+          push(injected ? 'context' : 'user', injected ? ROLE_COLOR.context : ROLE_COLOR.user, text, where)
         } else if (event.type === 'assistant/message') {
-          push('assistant', 'var(--dsw-alias-state-success-primary)', text, where)
+          push('assistant', ROLE_COLOR.assistant, text, where)
         } else if (event.type === 'tool/result') {
           const failed = message.isError === true
           const toolName = typeof message.toolCallId === 'string' ? toolNamesById.get(message.toolCallId) : undefined
           const label = toolName !== undefined ? `${where} ${toolName}` : where
-          push(failed ? 'tool ✕' : 'tool', failed ? 'var(--dsw-alias-state-danger-primary)' : 'var(--dsw-alias-state-idle-primary)', text, label)
+          push(failed ? 'tool ✕' : 'tool', failed ? ROLE_COLOR.toolFailed : ROLE_COLOR.tool, text, label)
         }
       }
       return blocks
@@ -1519,7 +1537,7 @@ window.__ModuleLoader__.load({
 .dsh-cu-preview-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dsh-cu-preview-meta{margin-top:6px;display:inline-block;padding:1px 8px;border-radius:999px;
   font-size:11px;line-height:16px;font-variant-numeric:tabular-nums;
-  color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,.12))}
+  color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover-solid)}
 `
           document.head.appendChild(tag)
           return () => {
