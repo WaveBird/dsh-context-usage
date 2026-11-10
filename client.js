@@ -198,6 +198,11 @@ window.__ModuleLoader__.load({
         fontSize: 11, lineHeight: '16px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
         color: 'var(--dsw-alias-label-primary)',
       },
+      /** One conversation block inside the detail pane: its own header row. */
+      paneBlock: { margin: '0 0 6px', whiteSpace: 'pre-wrap' },
+      paneBlockHead: { display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 2, position: 'sticky', top: -6, background: 'var(--dsw-specific-menu)', margin: '0 -8px 2px', padding: '2px 8px' },
+      paneBlockRole: { fontWeight: 600 },
+      paneBlockChars: { color: 'var(--dsw-alias-label-tertiary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' },
       title: { fontWeight: 600, flex: 'none' },
       spacer: { flex: 'auto' },
       figure: { color: 'var(--dsw-alias-label-secondary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' },
@@ -426,7 +431,7 @@ window.__ModuleLoader__.load({
       const eventWindow = eventWindowOf(sessions, sessionId)
       let systemText = systemPromptTextOf(eventWindow)
       let toolNames = toolNamesOf(eventWindow)
-      let conversationText = conversationTextOf(eventWindow)
+      const conversationBlocks = conversationBlocksOf(eventWindow)
       React.useEffect(() => {
         if (sessions === undefined || typeof sessionId !== 'string') return
         if (systemText === '' && !HEAD_PAGER.has(sessionId)) {
@@ -442,7 +447,7 @@ window.__ModuleLoader__.load({
           }
         }
       })
-      return { systemText, toolNames, conversationText }
+      return { systemText, toolNames, conversationBlocks }
     }
 
     /** One registered component's projection reader, or an always-empty hook. */
@@ -685,7 +690,7 @@ window.__ModuleLoader__.load({
       const CONTENT_BY_KEY = detailed === undefined ? {} : {
         systemTokens: detailed.systemText === undefined || detailed.systemText === '' ? undefined : detailed.systemText,
         toolsTokens: detailed.toolNames === undefined || detailed.toolNames.length === 0 ? undefined : detailed.toolNames.join('\n'),
-        messageTokens: detailed.conversationText === undefined || detailed.conversationText === '' ? undefined : detailed.conversationText,
+        messageTokens: detailed.conversationBlocks === undefined || detailed.conversationBlocks.length === 0 ? undefined : detailed.conversationBlocks,
       }
 
       const legend = []
@@ -741,9 +746,7 @@ window.__ModuleLoader__.load({
        * the occupancy area takes the band below them; otherwise all three stack.
        * The hovered legend's detail pane renders beside the whole card, so it
        * never reflows the panel's own layout. */
-      const pane = paneContent !== undefined
-        ? h('pre', { key: 'pane', style: S.tipPane, 'data-context-usage': 'panel-pane' }, paneContent)
-        : null
+      const pane = h(DetailPane, { key: 'pane', marker: 'panel-pane', content: paneContent })
       if (layout === 'medium') {
         return [
           h('div', { key: 'main', ref: innerRef, style: Object.assign({}, S.stack, S.paneAnchor) }, [
@@ -839,6 +842,85 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * One message block of the conversation pane: a role tag with the message's
+     * own character count, so the pane's content visibly accounts for the
+     * `messageTokens` figure beside it.
+     * @param props - role tag, character count, and the message text.
+     * @returns the block header and body.
+     */
+    function MessageBlock(props) {
+      return h('div', { style: S.paneBlock }, [
+        h('div', { key: 'head', style: S.paneBlockHead }, [
+          h('span', { key: 'role', style: Object.assign({}, S.paneBlockRole, { color: props.color }) }, props.tag),
+          h('span', { key: 'chars', style: S.paneBlockChars }, `${props.chars} chars ≈ ${formatTokens(props.chars / 4)}`),
+        ]),
+        props.text,
+      ])
+    }
+
+    /**
+     * The detached detail pane beside the tooltip or the panel card: a plain
+     * `pre` for string content, or one {@link MessageBlock} per entry for the
+     * conversation transcript, so each message's share of `messageTokens` is
+     * visible in place.
+     * @param props - marker attribute value, style key, and the content (string
+     * or `{tag, color, text, chars}` blocks).
+     * @returns the pane element, or null without content.
+     */
+    function DetailPane(props) {
+      if (props.content === undefined) return null
+      const body = Array.isArray(props.content)
+        ? props.content.map((block, index) => h(MessageBlock, {
+            key: index, tag: block.tag, color: block.color, chars: block.chars, text: block.text,
+          }))
+        : props.content
+      return h('div', { style: S.tipPane, 'data-context-usage': props.marker }, body)
+    }
+
+    /**
+     * Extract the session's complete model-visible conversation content from
+     * one event window, in surface order: human prompts, injected user-role
+     * context, assistant replies, and tool results — the same corpus the
+     * `messageTokens` figure prices. Each block carries its own character
+     * count so the content visibly accounts for the token figures beside it.
+     * @param window - the session's event-window snapshot, absent when unbound.
+     * @returns pane blocks (tag, tint, chars, text), or undefined with no window.
+     */
+    function conversationBlocksOf(window) {
+      if (window === undefined) return undefined
+      const blocks = []
+      const push = (tag, color, text) => {
+        const trimmed = typeof text === 'string' ? text.trim() : ''
+        if (trimmed.length > 0) blocks.push({ tag, color, text: trimmed, chars: trimmed.length })
+      }
+      for (const entry of window.entries) {
+        const event = entry && entry.type === 'event' ? entry.event : undefined
+        if (event === undefined) continue
+        /* user/message events carry the message flatly (data.content/source);
+         * the other surface events nest it under data.message. */
+        const message = event.type === 'user/message'
+          ? event.data
+          : event.data && event.data.message
+        const content = message && message.content
+        if (!Array.isArray(content)) continue
+        const text = content
+          .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
+          .map((block) => block.text)
+          .join('')
+        if (event.type === 'user/message') {
+          const injected = message.source && message.source.kind !== 'user'
+          push(injected ? 'context' : 'user', injected ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-brand-primary)', text)
+        } else if (event.type === 'assistant/message') {
+          push('assistant', 'var(--dsw-alias-state-success-primary)', text)
+        } else if (event.type === 'tool/result') {
+          const failed = message.isError === true
+          push(failed ? 'tool ✕' : 'tool', failed ? 'var(--dsw-alias-state-danger-primary)' : 'var(--dsw-alias-state-idle-primary)', text)
+        }
+      }
+      return blocks
+    }
+
+    /**
      * Extract the conversation's model-visible message content from one event
      * window: the most recent `user/message` and `assistant/message` texts in
      * surface order, each trimmed, newest turn last.
@@ -909,7 +991,7 @@ window.__ModuleLoader__.load({
      */
     function ContextTip(props) {
       const t = props.t
-      const { pressure, breakdown, systemText, toolNames, conversationText } = props
+      const { pressure, breakdown, systemText, toolNames, conversationBlocks } = props
       const used = pressure === undefined ? undefined : pressure.projectedTokens ?? pressure.pressureTokens
       const capacity = pressure === undefined ? undefined : pressure.contextWindow
       const usedPercent = share(used, capacity)
@@ -919,7 +1001,7 @@ window.__ModuleLoader__.load({
       const CONTENT_BY_KEY = {
         systemTokens: systemText === undefined || systemText === '' ? undefined : systemText,
         toolsTokens: toolNames === undefined || toolNames.length === 0 ? undefined : toolNames.join('\n'),
-        messageTokens: conversationText === undefined || conversationText === '' ? undefined : conversationText,
+        messageTokens: conversationBlocks === undefined || conversationBlocks.length === 0 ? undefined : conversationBlocks,
       }
       const rows = []
       let paneContent = undefined
@@ -956,9 +1038,7 @@ window.__ModuleLoader__.load({
         /* The detached detail pane: anchored to the tooltip's right edge, laid
          * out beside it rather than inside it, so revealing content never
          * reflows the composition rows. */
-        paneContent !== undefined ? h('pre', {
-          key: 'pane', style: S.tipPane, 'data-context-usage': 'tip-content',
-        }, paneContent) : null,
+        h(DetailPane, { key: 'pane', marker: 'tip-content', content: paneContent }),
       ])
     }
 
@@ -1018,7 +1098,7 @@ window.__ModuleLoader__.load({
           h(Ring, { key: 'ring', percent: usedPercent }),
           usedPercent === undefined ? null : h('span', { key: 'text' }, `${Math.round(usedPercent)}%`),
         ]),
-        tipOpen && !open ? h(ContextTip, { key: 'tip', t, pressure, breakdown, systemText, toolNames, conversationText: detailed.conversationText, onEnter: cancelTipClose, onLeave: leave }) : null,
+        tipOpen && !open ? h(ContextTip, { key: 'tip', t, pressure, breakdown, systemText, toolNames, conversationBlocks: detailed.conversationBlocks, onEnter: cancelTipClose, onLeave: leave }) : null,
       ])
     }
 
