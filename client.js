@@ -256,6 +256,7 @@ window.__ModuleLoader__.load({
       paneModal: {
         margin: 0, boxSizing: 'border-box', display: 'flex', flexDirection: 'column',
         width: 'min(880px, 92vw)', height: 'min(78vh, 760px)', overflow: 'hidden',
+        position: 'relative',
         padding: '8px 12px 12px', borderRadius: 'var(--dsw-radius-lg)',
         whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
         background: 'var(--dsw-specific-menu)', backdropFilter: 'var(--dsw-menu-backdrop-filter)',
@@ -263,6 +264,13 @@ window.__ModuleLoader__.load({
         fontSize: 12, lineHeight: '18px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
         color: 'var(--dsw-alias-label-primary)',
       },
+      /** Bottom-right resize grip of the maximized card. */
+      paneResizeGrip: {
+        position: 'absolute', right: 1, bottom: 1, width: 16, height: 16, zIndex: 6,
+        display: 'grid', placeItems: 'center', cursor: 'nwse-resize',
+        color: 'var(--dsw-alias-label-tertiary)', touchAction: 'none',
+      },
+      paneResizeGripActive: { color: 'var(--dsw-alias-brand-primary)' },
       /** The scrollable body inside the maximized card. */
       paneModalBody: { flex: 'auto', minHeight: 0, overflow: 'auto' },
       /** Extra right gutter on the maximized card, so the rail floats clear of the text. */
@@ -1012,6 +1020,8 @@ window.__ModuleLoader__.load({
       const [maximized, setMaximized] = React.useState(false)
       const [activeIndex, setActiveIndex] = React.useState(null)
       const [previewIndex, setPreviewIndex] = React.useState(null)
+      const [modalSize, setModalSize] = React.useState(null)
+      const [resizing, setResizing] = React.useState(false)
       const railScrollerRef = React.useRef(undefined)
       const cardRef = React.useRef(undefined)
       const bodyRef = React.useRef(undefined)
@@ -1027,6 +1037,31 @@ window.__ModuleLoader__.load({
         const offset = target.getBoundingClientRect().top - container.getBoundingClientRect().top
         container.scrollTop = Math.max(0, container.scrollTop + offset - 8)
       }
+      /* Drag the card's bottom-right grip to size it: the modal is centered by
+       * its overlay, so both edges follow the pointer symmetrically. */
+      const startResize = (event) => {
+        const card = cardRef.current
+        if (card === undefined || card === null) return
+        event.preventDefault()
+        event.stopPropagation()
+        const rect = card.getBoundingClientRect()
+        const origin = { x: event.clientX, y: event.clientY, w: rect.width, h: rect.height }
+        setResizing(true)
+        const onMove = (moveEvent) => {
+          const width = Math.max(360, Math.min(window.innerWidth - 24, origin.w + (moveEvent.clientX - origin.x) * 2))
+          const height = Math.max(220, Math.min(window.innerHeight - 24, origin.h + (moveEvent.clientY - origin.y) * 2))
+          setModalSize({ width, height })
+        }
+        const onUp = () => {
+          setResizing(false)
+          window.removeEventListener('pointermove', onMove, true)
+          window.removeEventListener('pointerup', onUp, true)
+        }
+        window.addEventListener('pointermove', onMove, true)
+        window.addEventListener('pointerup', onUp, true)
+      }
+      /* Double-clicking the grip returns the card to its default size. */
+      const resetSize = () => setModalSize(null)
       /* Maximizing pins the pane: the caller keeps it open and stops scheduling
        * its own close, so the overlay survives the pointer leaving the row. */
       const setMax = (value) => {
@@ -1149,10 +1184,25 @@ window.__ModuleLoader__.load({
           key: 'overlay', style: S.paneOverlay, 'data-context-usage': props.marker,
           onMouseDown: (event) => { if (event.target === event.currentTarget && props.onClose !== undefined) props.onClose() },
         }, h('div', {
-          ref: cardRef, style: Object.assign({}, S.paneModal, isBlocks ? S.paneModalWithRail : null),
+          ref: cardRef,
+          style: Object.assign({}, S.paneModal, isBlocks ? S.paneModalWithRail : null, modalSize),
           onMouseEnter: props.onEnter, onMouseLeave: props.onLeave,
           'data-context-usage': 'pane-modal', role: 'dialog', 'aria-modal': true,
-        }, [bar, h('div', { key: 'body', ref: bodyRef, style: S.paneModalBody }, body), rail]))
+        }, [
+          bar,
+          h('div', { key: 'body', ref: bodyRef, style: S.paneModalBody }, body),
+          rail,
+          /* The resize grip: drag to size the card, double-click to reset. */
+          h('div', {
+            key: 'grip', className: 'dsh-cu-resize',
+            style: Object.assign({}, S.paneResizeGrip, resizing ? S.paneResizeGripActive : null),
+            'data-context-usage': 'pane-resize', title: '拖动调整大小，双击恢复默认',
+            onPointerDown: startResize, onDoubleClick: resetSize,
+          }, h('svg', { viewBox: '0 0 16 16', width: 12, height: 12, 'aria-hidden': true }, [
+            h('path', { key: 'a', d: 'M15 6L6 15', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', fill: 'none' }),
+            h('path', { key: 'b', d: 'M15 11L11 15', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', fill: 'none' }),
+          ])),
+        ]))
         return ReactDOM !== undefined && typeof ReactDOM.createPortal === 'function'
           ? ReactDOM.createPortal(overlay, document.body)
           : overlay
