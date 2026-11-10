@@ -244,6 +244,32 @@ window.__ModuleLoader__.load({
       },
       /** The scrollable body inside the maximized card. */
       paneModalBody: { flex: 'auto', minHeight: 0, overflow: 'auto' },
+      /** Maximized card split: transcript on the left, outline rail on the right. */
+      paneModalMain: { flex: 'auto', minHeight: 0, display: 'flex', gap: 8, alignItems: 'stretch' },
+      /** The outline rail: a scrollable column of one dot per block. */
+      paneRail: {
+        flex: 'none', width: 18, overflowY: 'auto', overflowX: 'visible',
+        padding: '2px 0', scrollbarWidth: 'thin',
+      },
+      /** One rail row: the dot and, on hover, its caption. */
+      paneDotRow: { position: 'relative', display: 'flex', alignItems: 'center', height: 10, cursor: 'pointer' },
+      paneDot: {
+        width: 5, height: 5, borderRadius: 999, background: 'currentColor', opacity: 0.55,
+        transition: 'transform 120ms ease, opacity 120ms ease', transformOrigin: 'center',
+      },
+      paneDotHover: { transform: 'scale(2.2)', opacity: 1 },
+      paneDotActive: { transform: 'scale(2.4)', opacity: 1, boxShadow: '0 0 0 2px var(--dsw-alias-brand-primary)' },
+      /** The hovered dot's caption: floats to the left of the rail. */
+      paneDotLabel: {
+        position: 'absolute', right: 18, top: '50%', transform: 'translateY(-50%)',
+        display: 'flex', flexDirection: 'column', gap: 1, whiteSpace: 'nowrap',
+        padding: '3px 7px', borderRadius: 5, zIndex: 3, pointerEvents: 'none',
+        background: 'var(--dsw-specific-menu)', border: '1px solid var(--dsw-alias-border-l1)',
+        boxShadow: 'var(--dsw-elevation-panel)', fontSize: 11, lineHeight: '15px',
+      },
+      paneDotMeta: { color: 'var(--dsw-alias-label-tertiary)', fontVariantNumeric: 'tabular-nums' },
+      /** The block a rail jump landed on. */
+      paneBlockActive: { background: 'var(--dsw-alias-interactive-bg-hover-solid)', borderRadius: 4 },
       /** One conversation block inside the detail pane: its own header row. */
       paneBlock: { margin: '0 0 6px', whiteSpace: 'pre-wrap' },
       paneBlockHead: { display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 2, position: 'sticky', top: -6, background: 'var(--dsw-specific-menu)', margin: '0 -8px 2px', padding: '2px 8px' },
@@ -911,13 +937,48 @@ window.__ModuleLoader__.load({
      * @returns the block header and body.
      */
     function MessageBlock(props) {
-      return h('div', { style: S.paneBlock }, [
+      return h('div', {
+        style: props.active === true ? Object.assign({}, S.paneBlock, S.paneBlockActive) : S.paneBlock,
+        'data-context-usage': 'pane-block',
+        'data-block': props.index,
+      }, [
         h('div', { key: 'head', style: S.paneBlockHead }, [
           h('span', { key: 'role', style: Object.assign({}, S.paneBlockRole, { color: props.color }) },
             props.label !== undefined ? `${props.tag} · ${props.label}` : props.tag),
           h('span', { key: 'chars', style: S.paneBlockChars }, `${props.chars} chars ≈ ${formatTokens(props.chars / 4)}`),
         ]),
         props.text,
+      ])
+    }
+
+    /**
+     * One entry of the maximized pane's navigation rail: a dot that grows and
+     * names its block on hover, and scrolls the pane to that block on click.
+     * @param props - block index, its `tag · label` caption, the active state,
+     * and the jump handler.
+     * @returns the rail row.
+     */
+    function PaneDot(props) {
+      const [hover, setHover] = React.useState(false)
+      return h('div', {
+        style: S.paneDotRow, 'data-context-usage': 'pane-dot', 'data-dot': props.index,
+        onMouseEnter: () => setHover(true),
+        onMouseLeave: () => setHover(false),
+        onClick: () => props.onJump(props.index),
+        role: 'button', tabIndex: -1, title: props.caption,
+      }, [
+        h('span', {
+          key: 'dot',
+          style: Object.assign({}, S.paneDot, { color: props.color },
+            hover ? S.paneDotHover : null,
+            props.active ? S.paneDotActive : null),
+        }),
+        hover || props.active ? h('span', {
+          key: 'caption', style: S.paneDotLabel,
+        }, [
+          h('span', { key: 'text', style: { color: props.color, fontWeight: 600 } }, props.caption),
+          h('span', { key: 'meta', style: S.paneDotMeta }, props.meta),
+        ]) : null,
       ])
     }
 
@@ -938,8 +999,21 @@ window.__ModuleLoader__.load({
      */
     function DetailPane(props) {
       const [maximized, setMaximized] = React.useState(false)
+      const [activeIndex, setActiveIndex] = React.useState(null)
       const cardRef = React.useRef(undefined)
+      const bodyRef = React.useRef(undefined)
       const content = props.content
+      /* Jump to one block of the transcript and mark it: the rail's click
+       * scrolls the maximized body and tints the landed block. */
+      const jumpTo = (index) => {
+        setActiveIndex(index)
+        const container = bodyRef.current
+        if (container === undefined || container === null) return
+        const target = container.querySelector(`[data-block="${index}"]`)
+        if (target === null) return
+        const offset = target.getBoundingClientRect().top - container.getBoundingClientRect().top
+        container.scrollTop = Math.max(0, container.scrollTop + offset - 8)
+      }
       /* Maximizing pins the pane: the caller keeps it open and stops scheduling
        * its own close, so the overlay survives the pointer leaving the row. */
       const setMax = (value) => {
@@ -971,9 +1045,12 @@ window.__ModuleLoader__.load({
         if (content === undefined && maximized) setMax(false)
       }, [content === undefined, maximized])
       if (content === undefined) return null
-      const body = Array.isArray(content)
+      const isBlocks = Array.isArray(content)
+      const body = isBlocks
         ? content.map((block, index) => h(MessageBlock, {
-            key: index, tag: block.tag, color: block.color, chars: block.chars, text: block.text, label: block.label,
+            key: index, index,
+            tag: block.tag, color: block.color, chars: block.chars, text: block.text, label: block.label,
+            active: activeIndex === index,
           }))
         : content
       const bar = h('div', { key: 'bar', style: S.paneBar }, [
@@ -993,13 +1070,29 @@ window.__ModuleLoader__.load({
         }, '✕'),
       ])
       if (maximized) {
+        /* The transcript's outline: one dot per block down the right edge, so a
+         * long conversation can be jumped through without scrolling. */
+        const rail = isBlocks
+          ? h('div', { key: 'rail', style: S.paneRail, 'data-context-usage': 'pane-rail' },
+              content.map((block, index) => h(PaneDot, {
+                key: index, index,
+                caption: block.label !== undefined ? `${block.tag} · ${block.label}` : block.tag,
+                meta: `${block.chars} chars ≈ ${formatTokens(block.chars / 4)} tokens`,
+                color: block.color,
+                active: activeIndex === index,
+                onJump: jumpTo,
+              })))
+          : null
         const overlay = h('div', {
           key: 'overlay', style: S.paneOverlay, 'data-context-usage': props.marker,
           onMouseDown: (event) => { if (event.target === event.currentTarget && props.onClose !== undefined) props.onClose() },
         }, h('div', {
           ref: cardRef, style: S.paneModal, onMouseEnter: props.onEnter, onMouseLeave: props.onLeave,
           'data-context-usage': 'pane-modal', role: 'dialog', 'aria-modal': true,
-        }, [bar, h('div', { key: 'body', style: S.paneModalBody }, body)]))
+        }, [bar, h('div', { key: 'main', style: S.paneModalMain }, [
+          h('div', { key: 'body', ref: bodyRef, style: S.paneModalBody }, body),
+          rail,
+        ])]))
         return ReactDOM !== undefined && typeof ReactDOM.createPortal === 'function'
           ? ReactDOM.createPortal(overlay, document.body)
           : overlay
