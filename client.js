@@ -147,6 +147,9 @@ window.__ModuleLoader__.load({
     const GRID_ROWS = 5
     const GRID_CELLS = GRID_COLUMNS * GRID_ROWS
 
+    /** Fixed pitch between neighbouring outline marks, as the shipped chat rail uses. */
+    const RAIL_PITCH_PX = 10
+
     /** Ring geometry: 16px viewBox, 5.2px radius. */
     const RADIUS = 5.2
     const CIRCUMFERENCE = 2 * Math.PI * RADIUS
@@ -247,20 +250,13 @@ window.__ModuleLoader__.load({
       },
       /** The scrollable body inside the maximized card. */
       paneModalBody: { flex: 'auto', minHeight: 0, overflow: 'auto' },
-      /** Extra right gutter on the maximized card, so the outline floats clear of the text. */
-      paneModalWithRail: { position: 'relative', paddingRight: 26 },
-      /** The rail's placement; its expansion and hover styling live in the
-       * injected stylesheet, so a hover never re-renders the row list. */
-      outlineWrap: {
-        position: 'absolute', top: 34, bottom: 10, right: 4, zIndex: 4,
-        pointerEvents: 'none',
-      },
-      /** Right-anchored, so the expanding card grows leftward into the pane. */
-      outlineCard: {
-        position: 'absolute', top: 0, right: 0,
-        pointerEvents: 'auto', display: 'flex', flexDirection: 'column', gap: 1,
-        maxHeight: '100%', overflowY: 'auto', overflowX: 'hidden',
-        scrollbarWidth: 'thin',
+      /** Extra right gutter on the maximized card, so the rail floats clear of the text. */
+      paneModalWithRail: { position: 'relative', paddingRight: 30 },
+      /** The rail's placement, after the shipped chat turn navigator. Marks,
+       * hover emphasis and the preview card are styled in the injected sheet. */
+      outlineRail: {
+        position: 'absolute', top: 40, bottom: 12,
+        right: 6, width: 28, zIndex: 4, cursor: 'pointer',
       },
       /** The block a rail jump landed on. */
       paneBlockActive: { background: 'var(--dsw-alias-interactive-bg-hover-solid)', borderRadius: 4 },
@@ -956,24 +952,28 @@ window.__ModuleLoader__.load({
      * width, the active state, and the jump handler.
      * @returns the outline row.
      */
-    function OutlineRow(props) {
-      return h('div', {
-        className: 'dsh-cu-outline-row',
+    /**
+     * One mark of the maximized pane's turn-style rail, after the shipped chat
+     * rail (`TurnNavigator`): a fixed 10px pitch button whose `:before` bar grows
+     * and brightens on hover, with no layout change and no per-row state. The
+     * caption is not rendered here at all — one shared preview card follows the
+     * pointer instead, so a 1000-mark rail never re-renders for a hover.
+     * @param props - block index, its caption (for the accessible name), the
+     * active state, and the jump handler.
+     * @returns the rail mark.
+     */
+    const OutlineRow = React.memo(function OutlineRow(props) {
+      return h('button', {
+        type: 'button',
+        className: 'dsh-cu-mark',
+        style: { top: props.index * RAIL_PITCH_PX },
         'data-context-usage': 'pane-dot', 'data-dot': props.index,
         'data-active': props.active ? 'true' : undefined,
+        'aria-label': props.caption,
+        'aria-current': props.active ? 'true' : undefined,
         onClick: () => props.onJump(props.index),
-        role: 'button', tabIndex: -1, title: props.caption,
-      }, [
-        h('span', {
-          key: 'bar', className: 'dsh-cu-outline-bar',
-          style: { width: props.width, background: props.color },
-        }),
-        h('span', { key: 'caption', className: 'dsh-cu-outline-text' }, [
-          h('span', { key: 'label', className: 'dsh-cu-outline-label' }, props.caption),
-          h('span', { key: 'meta', className: 'dsh-cu-outline-meta' }, props.meta),
-        ]),
-      ])
-    }
+      })
+    })
 
     /**
      * The detached detail pane beside the tooltip or the panel card: a plain
@@ -993,6 +993,8 @@ window.__ModuleLoader__.load({
     function DetailPane(props) {
       const [maximized, setMaximized] = React.useState(false)
       const [activeIndex, setActiveIndex] = React.useState(null)
+      const [previewIndex, setPreviewIndex] = React.useState(null)
+      const railScrollerRef = React.useRef(undefined)
       const cardRef = React.useRef(undefined)
       const bodyRef = React.useRef(undefined)
       const content = props.content
@@ -1063,25 +1065,67 @@ window.__ModuleLoader__.load({
         }, '✕'),
       ])
       if (maximized) {
-        /* The transcript's outline, in Cherry Studio's shape: a rail of short
-         * rounded bars down the right edge that expands into a labeled list the
-         * instant the pointer arrives, and jumps to a block on click. */
+        /* The transcript's rail, after the shipped chat turn navigator: a fixed
+         * 10px pitch column of marks that scrolls inside its frame, with one
+         * preview card following the pointer. Nothing expands, so the rail never
+         * shifts under the hand. */
         const rail = isBlocks
           ? h('div', {
-              key: 'rail', className: 'dsh-cu-outline-wrap', style: S.outlineWrap,
+              key: 'rail', className: 'dsh-cu-rail', style: S.outlineRail,
               'data-context-usage': 'pane-rail',
-            }, h('div', {
-              key: 'card', className: 'dsh-cu-outline-card', style: S.outlineCard,
-              'data-context-usage': 'pane-rail-card',
-            }, content.map((block, index) => h(OutlineRow, {
-              key: index, index,
-              caption: block.label !== undefined ? `${block.tag} · ${block.label}` : block.tag,
-              meta: `${block.chars} chars ≈ ${formatTokens(block.chars / 4)} tok`,
-              color: block.color,
-              width: block.tag.indexOf('tool') === 0 ? 8 : block.tag === 'assistant' ? 12 : block.tag === 'context' ? 10 : 16,
-              active: activeIndex === index,
-              onJump: jumpTo,
-            }))))
+              onPointerMove: (event) => {
+                const scroller = railScrollerRef.current
+                if (scroller === undefined || scroller === null) return
+                const top = scroller.getBoundingClientRect().top + scroller.scrollTop
+                const index = Math.floor((event.clientY - top) / RAIL_PITCH_PX)
+                setPreviewIndex(index >= 0 && index < content.length ? index : null)
+              },
+              onPointerLeave: () => setPreviewIndex(null),
+            }, [
+              h('div', {
+                key: 'scroller', className: 'dsh-cu-rail-scroller', ref: railScrollerRef,
+                'data-context-usage': 'pane-rail-scroller',
+              }, h('div', {
+                key: 'marks', className: 'dsh-cu-rail-marks',
+                style: { height: content.length * RAIL_PITCH_PX },
+              }, content.map((block, index) => h(OutlineRow, {
+                key: index, index,
+                caption: block.label !== undefined ? `${block.tag} · ${block.label}` : block.tag,
+                active: activeIndex === index,
+                onJump: jumpTo,
+              })))),
+              previewIndex !== null && content[previewIndex] !== undefined
+                ? h('div', {
+                    key: 'preview', className: 'dsh-cu-preview',
+                    'data-context-usage': 'pane-preview',
+                    style: {
+                      top: Math.max(0, Math.min(
+                        previewIndex * RAIL_PITCH_PX - 12,
+                        Math.max(0, (railScrollerRef.current === null || railScrollerRef.current === undefined
+                          ? 0
+                          : railScrollerRef.current.clientHeight) - 88),
+                      )),
+                    },
+                  }, (() => {
+                    const block = content[previewIndex]
+                    return [
+                      h('div', { key: 'prompt', className: 'dsh-cu-preview-prompt' }, [
+                        h('span', {
+                          key: 'tag', className: 'dsh-cu-preview-tag',
+                          style: {
+                            color: block.color,
+                            background: `color-mix(in srgb, ${block.color} 14%, transparent)`,
+                          },
+                        }, block.tag),
+                        h('span', { key: 'text', className: 'dsh-cu-preview-text' },
+                          block.label !== undefined ? block.label : block.tag),
+                      ]),
+                      h('div', { key: 'meta', className: 'dsh-cu-preview-meta' },
+                        `${block.chars} chars ≈ ${formatTokens(block.chars / 4)} tok`),
+                    ]
+                  })())
+                : null,
+            ])
           : null
         const overlay = h('div', {
           key: 'overlay', style: S.paneOverlay, 'data-context-usage': props.marker,
@@ -1443,26 +1487,39 @@ window.__ModuleLoader__.load({
           tag.dataset.plugin = '@local/dsh-context-usage'
           tag.dataset.pluginCss = OUTLINE_STYLE_ID
           tag.textContent = `
-.dsh-cu-outline-card{padding:4px 3px;border-radius:10px;border:1px solid transparent;
-  transition:background 160ms ease-out,border-color 160ms ease-out,box-shadow 160ms ease-out,padding 160ms ease-out}
-.dsh-cu-outline-card:hover{padding:8px 10px;background:var(--dsw-specific-menu);
-  border-color:var(--dsw-alias-border-l1);box-shadow:0 0 10px 0 rgba(128,128,128,.2)}
-.dsh-cu-outline-row{display:flex;align-items:center;gap:8px;flex:0 0 auto;height:8px;
-  cursor:pointer;transition:height 160ms ease-out}
-.dsh-cu-outline-card:hover .dsh-cu-outline-row{height:22px}
-.dsh-cu-outline-bar{flex:none;height:3px;border-radius:2px;opacity:.5;
-  transition:opacity 160ms ease-out,transform 160ms ease-out}
-.dsh-cu-outline-row:hover .dsh-cu-outline-bar{opacity:1;transform:scaleY(1.8)}
-.dsh-cu-outline-row[data-active="true"] .dsh-cu-outline-bar{opacity:1;
-  box-shadow:0 0 0 2px var(--dsw-alias-brand-primary)}
-.dsh-cu-outline-text{display:none;align-items:baseline;gap:6px;min-width:0;max-width:260px;
-  white-space:nowrap;overflow:hidden;font-size:12px;line-height:18px;
-  color:var(--dsw-alias-label-tertiary)}
-.dsh-cu-outline-card:hover .dsh-cu-outline-text{display:flex}
-.dsh-cu-outline-row:hover .dsh-cu-outline-text{color:var(--dsw-alias-label-primary)}
-.dsh-cu-outline-label{overflow:hidden;text-overflow:ellipsis}
-.dsh-cu-outline-meta{flex:none;font-size:11px;font-variant-numeric:tabular-nums;
-  color:var(--dsw-alias-label-tertiary)}
+/* Rail after the shipped chat turn navigator (TurnNavigator): fixed 10px pitch
+   marks, hidden scrollbar, fade mask at the scrollable end, and one preview
+   card that follows the pointer. Nothing here animates layout. */
+.dsh-cu-rail-scroller{max-height:100%;overflow-y:auto;overscroll-behavior:contain;
+  scrollbar-width:none;position:relative;mask-image:linear-gradient(#000 0 calc(100% - 24px),#0000 100%);
+  -webkit-mask-image:linear-gradient(#000 0 calc(100% - 24px),#0000 100%)}
+.dsh-cu-rail-scroller::-webkit-scrollbar{display:none}
+.dsh-cu-rail-marks{position:relative}
+.dsh-cu-mark{cursor:pointer;background:0 0;border:0;border-radius:8px;height:10px;padding:0;
+  position:absolute;top:0;left:0;right:0}
+.dsh-cu-mark:before{content:"";position:absolute;top:50%;right:0;width:20px;height:2px;border-radius:2px;
+  background:var(--dsw-alias-border-l4);transform:translateY(-50%) scaleX(.6);transform-origin:100%;
+  transition:transform .14s,background-color .14s}
+.dsh-cu-mark:hover:before{background:var(--dsw-alias-label-tertiary);transform:translateY(-50%) scaleX(.9)}
+.dsh-cu-mark[data-active="true"]:before{background:var(--dsw-alias-label-primary);transform:translateY(-50%) scaleX(1)}
+.dsh-cu-mark:focus-visible{outline:none}
+.dsh-cu-mark:focus-visible:before{background:var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));
+  transform:translateY(-50%) scaleX(1)}
+/* The pointer's own preview: one card, to the left of the rail, following the
+   hovered mark's vertical position, exactly like the chat rail's turn preview. */
+.dsh-cu-preview{position:absolute;right:calc(100% + 10px);width:280px;max-height:120px;box-sizing:border-box;
+  padding:10px 12px;border-radius:var(--dsw-radius-lg);color:var(--dsw-alias-label-primary);
+  background:var(--dsw-alias-bg-layer-1);box-shadow:var(--dsw-elevation-panel);
+  pointer-events:none;overflow:hidden;transition:top .14s cubic-bezier(.2,.8,.2,1);
+  animation:dsh-cu-preview-in .12s ease-out}
+@keyframes dsh-cu-preview-in{from{opacity:0;transform:translate(4px)}to{opacity:1;transform:translate(0)}}
+.dsh-cu-preview-prompt{display:flex;align-items:center;gap:6px;min-width:0;
+  font-size:13px;font-weight:600;line-height:18px}
+.dsh-cu-preview-tag{flex:none;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:600;line-height:14px}
+.dsh-cu-preview-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsh-cu-preview-meta{margin-top:6px;display:inline-block;padding:1px 8px;border-radius:999px;
+  font-size:11px;line-height:16px;font-variant-numeric:tabular-nums;
+  color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,.12))}
 `
           document.head.appendChild(tag)
           return () => {
