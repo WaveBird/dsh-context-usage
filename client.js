@@ -258,8 +258,8 @@ window.__ModuleLoader__.load({
         width: 'min(880px, 92vw)', height: 'min(78vh, 760px)', overflow: 'hidden',
         position: 'relative',
         padding: '8px 12px 12px', borderRadius: 'var(--dsw-radius-lg)',
-        whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
-        background: 'var(--dsw-specific-menu)', backdropFilter: 'var(--dsw-menu-backdrop-filter)',
+        whiteSpace: 'normal', wordBreak: 'normal', userSelect: 'text',
+        background: 'var(--dsw-alias-bg-layer-1, #fff)', backdropFilter: 'var(--dsw-menu-backdrop-filter)',
         boxShadow: 'var(--dsw-elevation-panel)', border: '1px solid var(--dsw-alias-border-l1)',
         fontSize: 12, lineHeight: '18px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
         color: 'var(--dsw-alias-label-primary)',
@@ -272,7 +272,7 @@ window.__ModuleLoader__.load({
       },
       paneResizeGripActive: { color: 'var(--dsw-alias-brand-primary)' },
       /** The scrollable body inside the maximized card. */
-      paneModalBody: { flex: 'auto', minHeight: 0, overflow: 'auto' },
+      paneModalBody: { flex: 'auto', minHeight: 0, overflow: 'auto', padding: '2px 6px 2px 2px' },
       /** Extra right gutter on the maximized card, so the rail floats clear of the text. */
       paneModalWithRail: { position: 'relative', paddingRight: 30 },
       /** The rail's placement, after the shipped chat turn navigator. Marks,
@@ -282,15 +282,56 @@ window.__ModuleLoader__.load({
         right: 6, width: 28, zIndex: 4, cursor: 'pointer',
       },
       /** The block a rail jump landed on. */
-      paneBlockActive: { background: 'var(--dsw-alias-interactive-bg-hover-solid)', borderRadius: 4 },
-      /** One conversation block inside the detail pane: its own header row. */
-      paneBlock: { margin: '0 0 6px', whiteSpace: 'pre-wrap' },
-      paneBlockHead: { display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 2, position: 'sticky', top: -6, background: 'var(--dsw-specific-menu)', margin: '0 -8px 2px', padding: '2px 8px' },
+      paneBlockActive: { background: 'var(--dsw-alias-interactive-bg-hover-solid)' },
+      /** One conversation block: a role-tinted rail beside a document-like body. */
+      paneBlock: {
+        margin: '0 0 14px', padding: '4px 12px 6px 12px',
+        borderLeft: '3px solid transparent', borderRadius: '0 8px 8px 0',
+        fontFamily: 'var(--dsw-font-family, ui-sans-serif, system-ui, sans-serif)',
+        fontSize: 13, lineHeight: '21px', color: 'var(--dsw-alias-label-primary)',
+        whiteSpace: 'normal',
+      },
+      paneBlockHead: {
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+        position: 'sticky', top: -8, zIndex: 1,
+        margin: '0 -12px 6px', padding: '4px 12px',
+        background: 'var(--dsw-alias-bg-layer-1, #fff)',
+        borderBottom: '1px solid transparent',
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+      },
       paneBlockRole: { fontWeight: 600 },
       paneBlockChars: {
         color: 'var(--dsw-alias-label-secondary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap',
         padding: '0 6px', borderRadius: 999, background: 'var(--dsw-alias-interactive-bg-hover-solid)',
       },
+      /* Markdown body of one message. */
+      mdBody: { display: 'flex', flexDirection: 'column', gap: 2 },
+      mdParagraph: { margin: '2px 0 6px', overflowWrap: 'anywhere' },
+      mdHeading: { fontWeight: 700, lineHeight: '22px', margin: '10px 0 4px' },
+      mdH1: { fontSize: 16 },
+      mdH2: { fontSize: 15 },
+      mdH3: { fontSize: 13.5 },
+      mdItem: { display: 'flex', gap: 6, margin: '1px 0', overflowWrap: 'anywhere' },
+      mdBullet: { flex: 'none', color: 'var(--dsw-alias-label-tertiary)', minWidth: 10 },
+      mdItemText: { flex: 'auto', minWidth: 0 },
+      mdQuote: {
+        margin: '4px 0', padding: '2px 10px', borderLeft: '2px solid var(--dsw-alias-border-l1)',
+        color: 'var(--dsw-alias-label-secondary)',
+      },
+      mdPre: {
+        margin: '6px 0', padding: '8px 10px', borderRadius: 6, overflowX: 'auto',
+        background: 'var(--dsw-alias-interactive-bg-hover-solid)',
+        border: '1px solid var(--dsw-alias-border-l1)',
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+        fontSize: 12, lineHeight: '18px', whiteSpace: 'pre',
+      },
+      mdPreCode: { fontFamily: 'inherit', fontSize: 'inherit' },
+      mdCode: {
+        padding: '1px 5px', borderRadius: 4, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+        fontSize: 12, background: 'var(--dsw-alias-interactive-bg-hover-solid)',
+      },
+      mdStrong: { fontWeight: 650 },
+      mdLink: { color: 'var(--dsw-alias-state-business-primary)', textDecoration: 'underline' },
       title: { fontWeight: 600, flex: 'none' },
       spacer: { flex: 'auto' },
       figure: { color: 'var(--dsw-alias-label-secondary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' },
@@ -952,9 +993,161 @@ window.__ModuleLoader__.load({
      * @param props - role tag, character count, and the message text.
      * @returns the block header and body.
      */
-    function MessageBlock(props) {
+    /**
+     * Split one message's markdown into block-level runs the transcript renders
+     * as text, headings, lists, quotes and fenced code — the subset a coding
+     * agent's messages actually use. Line-based and allocation-light, so a
+     * 9000-character tool result parses once and stays memoized.
+     * @param text - the message text.
+     * @returns block nodes: `p`, `h`, `li`, `ol`, `quote`, `code`.
+     */
+    function parseMarkdownBlocks(text) {
+      const lines = String(text).split('\n')
+      const nodes = []
+      let paragraph = []
+      const flush = () => {
+        if (paragraph.length > 0) {
+          nodes.push({ type: 'p', text: paragraph.join(' ') })
+          paragraph = []
+        }
+      }
+      let index = 0
+      while (index < lines.length) {
+        const line = lines[index]
+        const fence = line.match(/^\s*```([\w+-]*)\s*$/)
+        if (fence !== null) {
+          flush()
+          const language = fence[1]
+          const buffer = []
+          index += 1
+          while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) {
+            buffer.push(lines[index])
+            index += 1
+          }
+          index += 1
+          nodes.push({ type: 'code', language, text: buffer.join('\n') })
+          continue
+        }
+        const heading = line.match(/^(#{1,4})\s+(.*)$/)
+        if (heading !== null) {
+          flush()
+          nodes.push({ type: 'h', level: heading[1].length, text: heading[2] })
+          index += 1
+          continue
+        }
+        const bullet = line.match(/^(\s*)[-*+]\s+(.*)$/)
+        if (bullet !== null) {
+          flush()
+          nodes.push({ type: 'li', depth: Math.min(3, Math.floor(bullet[1].length / 2)), text: bullet[2] })
+          index += 1
+          continue
+        }
+        const ordered = line.match(/^(\s*)(\d+)[.)]\s+(.*)$/)
+        if (ordered !== null) {
+          flush()
+          nodes.push({ type: 'ol', depth: Math.min(3, Math.floor(ordered[1].length / 2)), marker: `${ordered[2]}.`, text: ordered[3] })
+          index += 1
+          continue
+        }
+        const quote = line.match(/^\s*>\s?(.*)$/)
+        if (quote !== null) {
+          flush()
+          nodes.push({ type: 'quote', text: quote[1] })
+          index += 1
+          continue
+        }
+        if (line.trim() === '') {
+          flush()
+          index += 1
+          continue
+        }
+        paragraph.push(line.trim())
+        index += 1
+      }
+      flush()
+      return nodes
+    }
+
+    /**
+     * Render inline markdown: `code`, **bold**, and [text](url) — the three the
+     * transcript needs to stay readable without a parser dependency.
+     * @param text - one block's inline text.
+     * @param keyPrefix - stable React key prefix.
+     * @returns the inline runs.
+     */
+    function renderInline(text, keyPrefix) {
+      const pattern = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\[[^\]]+\]\([^)]*\))/g
+      const out = []
+      let cursor = 0
+      let match = pattern.exec(text)
+      let key = 0
+      while (match !== null) {
+        if (match.index > cursor) out.push(text.slice(cursor, match.index))
+        const token = match[0]
+        if (token.charAt(0) === '`') {
+          out.push(h('code', { key: `${keyPrefix}-c${key}`, style: S.mdCode }, token.slice(1, -1)))
+        } else if (token.startsWith('**')) {
+          out.push(h('strong', { key: `${keyPrefix}-b${key}`, style: S.mdStrong }, token.slice(2, -2)))
+        } else {
+          const label = token.slice(1, token.indexOf(']('))
+          out.push(h('span', { key: `${keyPrefix}-a${key}`, style: S.mdLink, title: token.slice(token.indexOf('](') + 2, -1) }, label))
+        }
+        cursor = match.index + token.length
+        key += 1
+        match = pattern.exec(text)
+      }
+      if (cursor < text.length) out.push(text.slice(cursor))
+      return out
+    }
+
+    /**
+     * One message body rendered as light markdown: prose in the UI font, code in
+     * a monospace run, headings and lists carrying their own weight, so a long
+     * agent transcript reads like a document instead of a grey text wall.
+     * @param props - the message text.
+     * @returns the rendered blocks.
+     */
+    function MessageBody(props) {
+      const nodes = React.useMemo(() => parseMarkdownBlocks(props.text), [props.text])
+      return h('div', { key: 'md', style: S.mdBody }, nodes.map((node, index) => {
+        const key = `n${index}`
+        if (node.type === 'code') {
+          return h('pre', { key, style: S.mdPre }, h('code', { style: S.mdPreCode }, node.text))
+        }
+        if (node.type === 'h') {
+          const level = node.level <= 1 ? S.mdH1 : node.level === 2 ? S.mdH2 : S.mdH3
+          return h('div', { key, style: Object.assign({}, S.mdHeading, level) }, renderInline(node.text, key))
+        }
+        if (node.type === 'li') {
+          return h('div', { key, style: Object.assign({}, S.mdItem, { paddingLeft: node.depth * 14 }) }, [
+            h('span', { key: 'm', style: S.mdBullet }, '•'),
+            h('span', { key: 't', style: S.mdItemText }, renderInline(node.text, key)),
+          ])
+        }
+        if (node.type === 'ol') {
+          return h('div', { key, style: Object.assign({}, S.mdItem, { paddingLeft: node.depth * 14 }) }, [
+            h('span', { key: 'm', style: S.mdBullet }, node.marker),
+            h('span', { key: 't', style: S.mdItemText }, renderInline(node.text, key)),
+          ])
+        }
+        if (node.type === 'quote') {
+          return h('div', { key, style: S.mdQuote }, renderInline(node.text, key))
+        }
+        return h('p', { key, style: S.mdParagraph }, renderInline(node.text, key))
+      }))
+    }
+
+    /**
+     * One message of the transcript: a role-tinted rail, a sticky header carrying
+     * the role tag and the message's own cost, and its markdown body.
+     * @param props - role tag, tint, label, char count, text, active state.
+     * @returns the message card.
+     */
+    const MessageBlock = React.memo(function MessageBlock(props) {
       return h('div', {
-        style: props.active === true ? Object.assign({}, S.paneBlock, S.paneBlockActive) : S.paneBlock,
+        style: Object.assign({}, S.paneBlock,
+          { borderLeftColor: props.color },
+          props.active === true ? S.paneBlockActive : null),
         'data-context-usage': 'pane-block',
         'data-block': props.index,
       }, [
@@ -963,9 +1156,9 @@ window.__ModuleLoader__.load({
             props.label !== undefined ? `${props.tag} · ${props.label}` : props.tag),
           h('span', { key: 'chars', style: S.paneBlockChars }, `${props.chars} chars ≈ ${formatTokens(props.chars / 4)}`),
         ]),
-        props.text,
+        h(MessageBody, { key: 'body', text: props.text }),
       ])
-    }
+    })
 
     /**
      * One entry of the maximized pane's outline rail, in the shape Cherry
