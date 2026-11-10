@@ -55,7 +55,7 @@ window.__ModuleLoader__.load({
      * The override is an owned stylesheet scoped by our own marker inside that
      * dock, so it can only ever match the dock this bundle renders into.
      */
-    const HIDE_SHIPPED_DOCK = true
+    const HIDE_SHIPPED_DOCK = false
 
     /** Marker attribute on this bundle's composer-dock anchor entry. */
     const DOCK_MARKER = 'composer-dock-anchor'
@@ -73,6 +73,9 @@ window.__ModuleLoader__.load({
       messages: '对话消息',
       free: '剩余空间',
       noSample: '暂无用量样本',
+      tipUsed: '已用 / 容量',
+      tipFree: '剩余空间',
+      tipExpandHint: '悬停查看完整内容',
       totals: '本会话累计',
       miss: '未命中',
       hit: '命中',
@@ -98,6 +101,9 @@ window.__ModuleLoader__.load({
       messages: 'Messages',
       free: 'Free space',
       noSample: 'No usage sample',
+      tipUsed: 'Used / capacity',
+      tipFree: 'Free space',
+      tipExpandHint: 'Hover to view full content',
       totals: 'Session totals',
       miss: 'Uncached',
       hit: 'Cached',
@@ -157,6 +163,29 @@ window.__ModuleLoader__.load({
         fontSize: 13, lineHeight: '20px',
       },
       head: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 },
+      /** Hover tooltip anchored to the composer occupancy button. */
+      tip: {
+        position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, zIndex: 50,
+        boxSizing: 'border-box', minWidth: 200, whiteSpace: 'nowrap',
+        padding: '8px 10px', borderRadius: 'var(--dsw-radius-lg)',
+        background: 'var(--dsw-specific-menu)', backdropFilter: 'var(--dsw-menu-backdrop-filter)',
+        boxShadow: 'var(--dsw-elevation-panel)', border: '1px solid var(--dsw-alias-border-l1)',
+        color: 'var(--dsw-alias-label-primary)', fontSize: 12, lineHeight: '18px',
+      },
+      tipRow: { display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'space-between' },
+      tipName: { display: 'flex', alignItems: 'center', gap: 6 },
+      tipValue: { fontVariantNumeric: 'tabular-nums', color: 'var(--dsw-alias-label-secondary)' },
+      tipPercent: { fontVariantNumeric: 'tabular-nums', fontWeight: 600, width: 48, textAlign: 'right' },
+      tipHead: { fontWeight: 600, marginBottom: 4 },
+      tipToggleRow: { cursor: 'pointer', borderRadius: 4, padding: '1px 2px', margin: '0 -2px' },
+      tipChevron: { color: 'var(--dsw-alias-label-tertiary)', flex: 'none', width: 12, textAlign: 'right' },
+      tipContent: {
+        margin: '4px 0 0', padding: '6px 8px', borderRadius: 6,
+        background: 'var(--dsw-alias-bg-layer-2)', border: '1px solid var(--dsw-alias-border-l1)',
+        maxHeight: 220, maxWidth: 380, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+        fontSize: 11, lineHeight: '16px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+        color: 'var(--dsw-alias-label-primary)', userSelect: 'text',
+      },
       title: { fontWeight: 600, flex: 'none' },
       spacer: { flex: 'auto' },
       figure: { color: 'var(--dsw-alias-label-secondary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' },
@@ -328,6 +357,47 @@ window.__ModuleLoader__.load({
     function translator(props) {
       return props && typeof props.t === 'function' ? props.t : (key) => key
     }
+
+    /**
+     * Read one session's event window through the plugin-scoped sessions
+     * service: the binding's Session instance carries `eventSource`, the live
+     * contiguous event window the Conversation assembles from. The system
+     * prompt lives at the log's head, so a window that still has older history
+     * pages back (bounded) before extracting.
+     * @param sessions - the client `sessions` service, or undefined before apply.
+     * @param sessionId - the session id, absent on the hero composer.
+     * @returns the event-window snapshot, or undefined without a binding.
+     */
+    function eventWindowOf(sessions, sessionId) {
+      if (sessions === undefined || typeof sessionId !== 'string') return undefined
+      const binding = typeof sessions.binding === 'function' ? sessions.binding(sessionId) : undefined
+      const session = binding === undefined ? undefined : binding.session
+      if (session === undefined || typeof session.eventSource?.getSnapshot !== 'function') return undefined
+      return session.eventSource.getSnapshot()
+    }
+
+    /**
+     * Page a session's history back to the log head, bounded, so the
+     * `system/message` event at seq 0 enters the loaded window.
+     * @param session - the client Session instance.
+     * @returns whether the window now covers the log head.
+     */
+    async function pageToHead(session) {
+      for (let round = 0; round < 60; round += 1) {
+        const state = session.getSnapshot()
+        if (!state.hasMore || state.loadingOlder === true) {
+          if (state.loadingOlder === true) await new Promise((resolve) => setTimeout(resolve, 120))
+          if (!state.hasMore) return true
+          continue
+        }
+        await session.loadOlder()
+      }
+      const state = session.getSnapshot()
+      return !state.hasMore
+    }
+
+    /** Page-to-head runs registered per session id, so concurrent hovers share one pass. */
+    const HEAD_PAGER = new Map()
 
     /** One registered component's projection reader, or an always-empty hook. */
     function projectionReader(props) {
@@ -640,9 +710,144 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Extract the effective system prompt text from one event window: the last
+     * nonempty `system/message`'s joined text blocks (the surface's effective
+     * node), or '' when the window shows no system prompt.
+     * @param window - the session's event-window snapshot, absent when unbound.
+     * @returns the effective system prompt text, or undefined with no window.
+     */
+    function systemPromptTextOf(window) {
+      if (window === undefined) return undefined
+      let text = ''
+      for (const entry of window.entries) {
+        const event = entry && entry.type === 'event' ? entry.event : undefined
+        if (event === undefined || event.type !== 'system/message') continue
+        const content = event.data && event.data.message && event.data.message.content
+        if (!Array.isArray(content)) continue
+        const joined = content
+          .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
+          .map((block) => block.text)
+          .join('')
+        if (joined.length > 0) text = joined
+      }
+      return text
+    }
+
+    /**
+     * Extract the effective tool catalog from one event window: the names on
+     * the newest `request/header`'s tool schemas, in catalog order.
+     * @param window - the session's event-window snapshot, absent when unbound.
+     * @returns tool names, or undefined with no window.
+     */
+    function toolNamesOf(window) {
+      if (window === undefined) return undefined
+      let names = []
+      for (const entry of window.entries) {
+        const event = entry && entry.type === 'event' ? entry.event : undefined
+        if (event === undefined || event.type !== 'request/header') continue
+        const header = event.data && event.data.header ? event.data.header : (event.data || {})
+        const tools = Array.isArray(header.tools) ? header.tools : []
+        const listed = tools
+          .map((tool) => tool && typeof tool.name === 'string' ? tool.name : '')
+          .filter((name) => name.length > 0)
+        if (tools.length > 0 || event.data && event.data.tools !== undefined) names = listed
+      }
+      return names
+    }
+
+    /**
+     * One hover-revealed content section of the hover tooltip: the summary row
+     * reveals the full content in a scrollable pane while the pointer rests on
+     * it, and hides again when the pointer moves off.
+     * @param props - label, value text, hover state, enter/leave handlers, and
+     * the revealed content text.
+     * @returns the section.
+     */
+    function TipSection(props) {
+      const revealable = props.content !== undefined && props.content !== ''
+      return h('div', {
+        style: { minWidth: 0 },
+        onMouseEnter: props.onEnter,
+        onMouseLeave: props.onLeave,
+      }, [
+        h('div', {
+          key: 'row',
+          style: Object.assign({}, S.tipRow, revealable ? S.tipToggleRow : null),
+          title: revealable ? props.title : undefined,
+          'data-context-usage': 'tip-section',
+        }, [
+          h('span', { key: 'name', style: S.tipName }, [h(Glyph, { kind: props.kind, color: props.color }), props.label]),
+          h('span', { key: 'value', style: S.tipValue }, props.value),
+          revealable ? h('span', {
+            key: 'chev', style: S.tipChevron,
+          }, props.hovered ? '▾' : '▸') : null,
+        ]),
+        props.hovered && revealable ? h('pre', {
+          key: 'content', style: S.tipContent, 'data-context-usage': 'tip-content',
+        }, props.content) : null,
+      ])
+    }
+
+    /**
+     * The hover tooltip the composer's occupancy button shows after a short
+     * dwell: the composition legend (system / tools / messages / free) with the
+     * system prompt and tool catalog expandable in place, mirroring the panel's
+     * own numbers and the session's actual model-visible content.
+     * @param props - locale seat, the projection values, the event window
+     * derivations, and the dismiss handler.
+     * @returns the floating card, positioned above the button.
+     */
+    function ContextTip(props) {
+      const t = props.t
+      const { pressure, breakdown, systemText, toolNames } = props
+      const used = pressure === undefined ? undefined : pressure.projectedTokens ?? pressure.pressureTokens
+      const capacity = pressure === undefined ? undefined : pressure.contextWindow
+      const usedPercent = share(used, capacity)
+      const total = breakdown === undefined ? 0 : breakdown.systemTokens + breakdown.toolsTokens + breakdown.messageTokens
+      const [hoveredRow, setHoveredRow] = React.useState(null)
+      const toggle = (key, on) => setHoveredRow((current) => (on ? key : current === key ? null : current))
+      const rows = []
+      for (const row of ROWS) {
+        const value = breakdown === undefined ? undefined : breakdown[row.key]
+        const content = row.key === 'systemTokens'
+          ? (systemText === undefined || systemText === '' ? undefined : systemText)
+          : row.key === 'toolsTokens'
+            ? (toolNames === undefined || toolNames.length === 0 ? undefined : toolNames.join('\n'))
+            : undefined
+        rows.push(h(TipSection, {
+          key: row.key,
+          kind: row.kind, label: t(row.label), color: row.color,
+          value: formatTokens(value),
+          hovered: hoveredRow === row.key,
+          onEnter: content === undefined || content === '' ? undefined : () => toggle(row.key, true),
+          onLeave: content === undefined || content === '' ? undefined : () => toggle(row.key, false),
+          title: t('tipExpandHint'),
+          content,
+        }, ))
+      }
+      if (used !== undefined && capacity !== undefined) {
+        const free = Math.max(0, capacity - used)
+        rows.push(h('div', { key: 'free', style: S.tipRow }, [
+          h('span', { key: 'name', style: S.tipName }, [h(Glyph, { kind: 'free', color: FREE_COLOR }), t('tipFree')]),
+          h('span', { key: 'value', style: S.tipValue }, formatTokens(free)),
+          h('span', { key: 'percent', style: S.tipPercent },
+            share(free, capacity) === undefined ? '' : percentText(share(free, capacity))),
+        ]))
+      }
+      return h('div', { style: S.tip, onMouseEnter: props.onEnter, onMouseLeave: props.onLeave, 'data-context-usage': 'tip' }, [
+        h('div', { key: 'head', style: S.tipHead }, [
+          `${t('tipUsed')}  ${formatTokens(used)} / ${formatTokens(capacity)}`,
+          usedPercent === undefined ? '' : `  ${percentText(usedPercent)}`,
+        ]),
+        breakdown === undefined ? h('div', { style: S.muted }, t('noSample')) : rows,
+      ])
+    }
+
+    /**
      * The composer's occupancy button: a live percentage that opens and closes
      * this session's panel. It sits in `conversation.input.right`, the compact
-     * control seat immediately before the submit action.
+     * control seat immediately before the submit action. Hovering it for a short
+     * dwell shows a composition tooltip; clicking still toggles the full panel.
      * @param props - the composer row's standard session shares.
      * @returns the toggle button.
      */
@@ -652,20 +857,78 @@ window.__ModuleLoader__.load({
       const sessionId = props ? props.sessionId : undefined
       const open = usePanelOpen(sessionId)
       const [hover, setHover] = React.useState(false)
+      const [tipOpen, setTipOpen] = React.useState(false)
+      const tipTimer = React.useRef(undefined)
       const { usedPercent } = occupancyOf(read)
-      return h('button', {
-        type: 'button',
-        style: open || hover ? Object.assign({}, S.toggle, S.toggleActive) : S.toggle,
-        title: t('title'),
-        'aria-label': t('title'),
-        'aria-pressed': open,
-        'data-context-usage': 'toggle',
-        onClick: () => setPanelOpen(sessionId, !open),
-        onMouseEnter: () => setHover(true),
-        onMouseLeave: () => setHover(false),
-      }, [
-        h(Ring, { key: 'ring', percent: usedPercent }),
-        usedPercent === undefined ? null : h('span', { key: 'text' }, `${Math.round(usedPercent)}%`),
+      React.useEffect(() => () => {
+        if (tipTimer.current !== undefined) window.clearTimeout(tipTimer.current)
+      }, [])
+      const enter = () => {
+        setHover(true)
+        if (tipTimer.current !== undefined) window.clearTimeout(tipTimer.current)
+        tipTimer.current = window.setTimeout(() => setTipOpen(true), 350)
+      }
+      const leave = () => {
+        setHover(false)
+        if (tipTimer.current !== undefined) window.clearTimeout(tipTimer.current)
+        tipTimer.current = window.setTimeout(() => setTipOpen(false), 150)
+      }
+      const cancelTipClose = () => {
+        if (tipTimer.current !== undefined) window.clearTimeout(tipTimer.current)
+      }
+      const pressure = read('contextPressure')
+      const breakdown = read('contextBreakdown')
+      const sessions = props ? props.sessions : undefined
+      /* Injected values are captured before the log head is paged in; re-read
+       * through the sessions service every render so a completed page pass
+       * (which bumps forceTick) picks up the fresh window. */
+      const [ , forceTick] = React.useState(0)
+      const [paging, setPaging] = React.useState(false)
+      let eventWindow = eventWindowOf(sessions, sessionId)
+      if (eventWindow !== undefined) {
+        let text = systemPromptTextOf(eventWindow)
+        if (text === '' && sessions !== undefined && typeof sessionId === 'string' && !HEAD_PAGER.has(sessionId)) {
+          const binding = sessions.binding(sessionId)
+          const session = binding === undefined ? undefined : binding.session
+          if (session !== undefined && session.getSnapshot().hasMore === true) {
+            const pass = pageToHead(session)
+            HEAD_PAGER.set(sessionId, pass)
+            setPaging(true)
+            pass.then(() => {
+              HEAD_PAGER.delete(sessionId)
+              forceTick((n) => n + 1)
+            })
+          }
+        }
+        if (text === '' && eventWindow !== undefined) {
+          const fresh = eventWindowOf(sessions, sessionId)
+          if (fresh !== undefined && fresh !== eventWindow) {
+            eventWindow = fresh
+            text = systemPromptTextOf(fresh)
+          }
+        }
+        systemText = text
+        toolNames = toolNamesOf(eventWindow)
+      }
+      void paging
+      const wrapStyle = Object.assign({}, S.toggle, { position: 'relative' })
+      return h('div', { style: wrapStyle, 'data-context-usage': 'toggle-wrap' }, [
+        h('button', {
+          key: 'button', type: 'button',
+          style: open || hover ? Object.assign({}, S.toggle, S.toggleActive) : S.toggle,
+          title: t('title'),
+          'aria-label': t('title'),
+          'aria-haspopup': 'dialog',
+          'aria-expanded': open,
+          'data-context-usage': 'toggle',
+          onClick: () => { cancelTipClose(); setTipOpen(false); setPanelOpen(sessionId, !open) },
+          onMouseEnter: enter,
+          onMouseLeave: leave,
+        }, [
+          h(Ring, { key: 'ring', percent: usedPercent }),
+          usedPercent === undefined ? null : h('span', { key: 'text' }, `${Math.round(usedPercent)}%`),
+        ]),
+        tipOpen && !open ? h(ContextTip, { key: 'tip', t, pressure, breakdown, systemText, toolNames, onEnter: cancelTipClose, onLeave: leave }) : null,
       ])
     }
 
@@ -703,9 +966,10 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots', 'locale', 'commandUi'],
+      inject: ['slots', 'locale', 'commandUi', 'sessions'],
       apply(ctx) {
         const tr = ctx.locale.bind(NS)
+        const sessions = ctx.sessions
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'context-usage: dictionaries')
 
         ctx.effect(() => ctx.commandUi.register({
@@ -734,6 +998,14 @@ window.__ModuleLoader__.load({
           id: 'context-usage-toggle',
           order: 0,
           locale: NS,
+          inject: (sessionId) => {
+            const eventWindow = eventWindowOf(sessions, sessionId)
+            return {
+              systemText: systemPromptTextOf(eventWindow),
+              toolNames: toolNamesOf(eventWindow),
+              sessions,
+            }
+          },
         }, ContextToggle))
 
         ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
