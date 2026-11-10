@@ -851,7 +851,8 @@ window.__ModuleLoader__.load({
     function MessageBlock(props) {
       return h('div', { style: S.paneBlock }, [
         h('div', { key: 'head', style: S.paneBlockHead }, [
-          h('span', { key: 'role', style: Object.assign({}, S.paneBlockRole, { color: props.color }) }, props.tag),
+          h('span', { key: 'role', style: Object.assign({}, S.paneBlockRole, { color: props.color }) },
+            props.label !== undefined ? `${props.tag} · ${props.label}` : props.tag),
           h('span', { key: 'chars', style: S.paneBlockChars }, `${props.chars} chars ≈ ${formatTokens(props.chars / 4)}`),
         ]),
         props.text,
@@ -871,7 +872,7 @@ window.__ModuleLoader__.load({
       if (props.content === undefined) return null
       const body = Array.isArray(props.content)
         ? props.content.map((block, index) => h(MessageBlock, {
-            key: index, tag: block.tag, color: block.color, chars: block.chars, text: block.text,
+            key: index, tag: block.tag, color: block.color, chars: block.chars, text: block.text, label: block.label,
           }))
         : props.content
       return h('div', { style: S.tipPane, 'data-context-usage': props.marker }, body)
@@ -889,9 +890,18 @@ window.__ModuleLoader__.load({
     function conversationBlocksOf(window) {
       if (window === undefined) return undefined
       const blocks = []
-      const push = (tag, color, text) => {
+      const push = (tag, color, text, label) => {
         const trimmed = typeof text === 'string' ? text.trim() : ''
-        if (trimmed.length > 0) blocks.push({ tag, color, text: trimmed, chars: trimmed.length })
+        if (trimmed.length > 0) blocks.push({ tag, color, text: trimmed, chars: trimmed.length, label })
+      }
+      /* tool/call names by callId, so each tool result can name its tool. */
+      const toolNamesById = new Map()
+      for (const entry of window.entries) {
+        const event = entry && entry.type === 'event' ? entry.event : undefined
+        if (event === undefined || event.type !== 'tool/call') continue
+        if (typeof event.data.callId === 'string' && typeof event.data.name === 'string') {
+          toolNamesById.set(event.data.callId, event.data.name)
+        }
       }
       for (const entry of window.entries) {
         const event = entry && entry.type === 'event' ? entry.event : undefined
@@ -907,14 +917,20 @@ window.__ModuleLoader__.load({
           .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
           .map((block) => block.text)
           .join('')
+        /* The log's own hierarchy: seq orders every event; turn/step place it. */
+        const where = event.data && typeof event.data.turn === 'number'
+          ? `T${event.data.turn}${typeof event.data.step === 'number' ? `.S${event.data.step}` : ''} #${event.seq}`
+          : `#${event.seq}`
         if (event.type === 'user/message') {
           const injected = message.source && message.source.kind !== 'user'
-          push(injected ? 'context' : 'user', injected ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-brand-primary)', text)
+          push(injected ? 'context' : 'user', injected ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-brand-primary)', text, where)
         } else if (event.type === 'assistant/message') {
-          push('assistant', 'var(--dsw-alias-state-success-primary)', text)
+          push('assistant', 'var(--dsw-alias-state-success-primary)', text, where)
         } else if (event.type === 'tool/result') {
           const failed = message.isError === true
-          push(failed ? 'tool ✕' : 'tool', failed ? 'var(--dsw-alias-state-danger-primary)' : 'var(--dsw-alias-state-idle-primary)', text)
+          const toolName = typeof message.toolCallId === 'string' ? toolNamesById.get(message.toolCallId) : undefined
+          const label = toolName !== undefined ? `${where} ${toolName}` : where
+          push(failed ? 'tool ✕' : 'tool', failed ? 'var(--dsw-alias-state-danger-primary)' : 'var(--dsw-alias-state-idle-primary)', text, label)
         }
       }
       return blocks
