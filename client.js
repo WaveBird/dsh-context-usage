@@ -180,6 +180,11 @@ window.__ModuleLoader__.load({
       tipHead: { fontWeight: 600, marginBottom: 4 },
       tipToggleRow: { cursor: 'pointer', borderRadius: 4, padding: '1px 2px', margin: '0 -2px' },
       tipChevron: { color: 'var(--dsw-alias-label-tertiary)', flex: 'none', width: 12, textAlign: 'right' },
+      /** Panel legend rows reveal their content through the same right-side pane. */
+      legendHoverable: { cursor: 'pointer', borderRadius: 4, margin: '0 -2px', padding: '0 2px' },
+      legendHovered: { background: 'var(--dsw-alias-interactive-bg-hover-solid)' },
+      /** Position anchor so a legend's detail pane can hang beside the card. */
+      paneAnchor: { position: 'relative' },
       /* The detached detail pane: floats to the right of the tooltip card,
        * vertically aligned with its top; it occupies no layout space, so the
        * composition rows never reflow when content appears. */
@@ -406,6 +411,40 @@ window.__ModuleLoader__.load({
     /** Page-to-head runs registered per session id, so concurrent hovers share one pass. */
     const HEAD_PAGER = new Map()
 
+    /**
+     * The detailed model-visible content of one session: the effective system
+     * prompt, the tool catalog names, and the rendered conversation transcript.
+     * The system prompt lives at the log head, so a window that still has older
+     * history pages back once (shared per session), then re-reads.
+     * @param sessions - the client `sessions` service, or undefined before apply.
+     * @param sessionId - the session id, absent on the hero composer.
+     * @returns `{ systemText, toolNames, conversationText }`; each undefined
+     * without a session binding.
+     */
+    function useDetailedContent(sessions, sessionId) {
+      const [ , forceTick] = React.useState(0)
+      const eventWindow = eventWindowOf(sessions, sessionId)
+      let systemText = systemPromptTextOf(eventWindow)
+      let toolNames = toolNamesOf(eventWindow)
+      let conversationText = conversationTextOf(eventWindow)
+      React.useEffect(() => {
+        if (sessions === undefined || typeof sessionId !== 'string') return
+        if (systemText === '' && !HEAD_PAGER.has(sessionId)) {
+          const binding = sessions.binding(sessionId)
+          const session = binding === undefined ? undefined : binding.session
+          if (session !== undefined && session.getSnapshot().hasMore === true) {
+            const pass = pageToHead(session)
+            HEAD_PAGER.set(sessionId, pass)
+            pass.then(() => {
+              HEAD_PAGER.delete(sessionId)
+              forceTick((n) => n + 1)
+            })
+          }
+        }
+      })
+      return { systemText, toolNames, conversationText }
+    }
+
     /** One registered component's projection reader, or an always-empty hook. */
     function projectionReader(props) {
       return props && typeof props.useProjection === 'function' ? props.useProjection : () => undefined
@@ -543,15 +582,28 @@ window.__ModuleLoader__.load({
     /**
      * One legend row: it contributes three grid items to {@link S.legendBox} —
      * the named glyph, the value, and the share — so the grid sizes each column
-     * to its widest content and no row stretches over its own text.
-     * @param props - glyph kind, label, tint, value text, and optional share.
+     * to its widest content and no row stretches over its own text. A row with
+     * detailed content highlights and chevrons while the pointer rests on it,
+     * mirroring the composer tooltip's rows; the pane itself renders beside the
+     * card (see {@link bodyChildren}'s legend pane), not inside this row.
+     * @param props - glyph kind, label, tint, value text, optional share, and
+     * the hover-reveal callbacks.
      * @returns the row's three grid items.
      */
     function LegendCell(props) {
+      const revealable = props.content !== undefined && props.content !== ''
       return h(React.Fragment, null, [
-        h('div', { key: 'name', style: S.legendName }, [
+        h('div', {
+          key: 'name',
+          style: Object.assign({}, S.legendName, revealable ? S.legendHoverable : null, props.hovered ? S.legendHovered : null),
+          title: revealable ? props.hint : undefined,
+          onMouseEnter: props.onEnter,
+          onMouseLeave: props.onLeave,
+          'data-context-usage': 'legend-cell',
+        }, [
           h(Glyph, { key: 'glyph', kind: props.kind, color: props.color }),
           h('span', { key: 'label', style: S.legendLabel }, props.label),
+          revealable ? h('span', { key: 'chev', style: S.tipChevron }, props.hovered ? '▾' : '▸') : null,
         ]),
         h('span', { key: 'value', style: S.legendValue }, props.value),
         props.percent === undefined ? null : h('span', { key: 'percent', style: S.legendPercent }, `(${percentText(props.percent)})`),
@@ -615,7 +667,7 @@ window.__ModuleLoader__.load({
      * @returns the card's children.
      */
     function bodyChildren(props) {
-      const { t, pressure, breakdown, usage, session, layout, innerRef } = props
+      const { t, pressure, breakdown, usage, session, layout, innerRef, detailed, hoveredLegend, onLegendHover } = props
       const used = pressure === undefined ? undefined : pressure.projectedTokens ?? pressure.pressureTokens
       const capacity = pressure === undefined ? undefined : pressure.contextWindow
       const usedPercent = share(used, capacity)
@@ -630,13 +682,27 @@ window.__ModuleLoader__.load({
         }
       }
 
+      const CONTENT_BY_KEY = detailed === undefined ? {} : {
+        systemTokens: detailed.systemText === undefined || detailed.systemText === '' ? undefined : detailed.systemText,
+        toolsTokens: detailed.toolNames === undefined || detailed.toolNames.length === 0 ? undefined : detailed.toolNames.join('\n'),
+        messageTokens: detailed.conversationText === undefined || detailed.conversationText === '' ? undefined : detailed.conversationText,
+      }
+
       const legend = []
+      let paneContent = undefined
       for (const row of ROWS) {
         const value = breakdown === undefined ? undefined : breakdown[row.key]
+        const content = CONTENT_BY_KEY[row.key]
         legend.push(h(LegendCell, {
           key: row.key, kind: row.kind, label: t(row.label), color: row.color,
           value: formatTokens(value), percent: share(value, capacity),
+          content,
+          hovered: hoveredLegend === row.key,
+          onEnter: content === undefined || content === '' ? undefined : () => onLegendHover(row.key, true),
+          onLeave: content === undefined || content === '' ? undefined : () => onLegendHover(row.key, false),
+          hint: t('tipExpandHint'),
         }))
+        if (hoveredLegend === row.key && content !== undefined && content !== '') paneContent = content
       }
       if (used !== undefined && capacity !== undefined) {
         const free = Math.max(0, capacity - used)
@@ -672,16 +738,22 @@ window.__ModuleLoader__.load({
         : h('div', { key: 'legend', style: S.legendBox }, legend)
 
       /* One band where it fits; otherwise the overview pairs with the legend and
-       * the occupancy area takes the band below them; otherwise all three stack. */
+       * the occupancy area takes the band below them; otherwise all three stack.
+       * The hovered legend's detail pane renders beside the whole card, so it
+       * never reflows the panel's own layout. */
+      const pane = paneContent !== undefined
+        ? h('pre', { key: 'pane', style: S.tipPane, 'data-context-usage': 'panel-pane' }, paneContent)
+        : null
       if (layout === 'medium') {
         return [
-          h('div', { key: 'main', ref: innerRef, style: S.stack }, [
+          h('div', { key: 'main', ref: innerRef, style: Object.assign({}, S.stack, S.paneAnchor) }, [
             h('div', { key: 'pair', style: S.pair }, [overview, legendBox]),
             viz,
+            pane,
           ]),
         ]
       }
-      return [h('div', { key: 'main', ref: innerRef, style: layout === 'wide' ? S.main : S.stack }, [overview, viz, legendBox])]
+      return [h('div', { key: 'main', ref: innerRef, style: Object.assign({}, layout === 'wide' ? S.main : S.stack, S.paneAnchor) }, [overview, viz, legendBox, pane])]
     }
 
     /**
@@ -710,10 +782,14 @@ window.__ModuleLoader__.load({
       const breakdown = read('contextBreakdown')
       const usage = read('tokenUsage')
       const session = read('sessionStats')
+      const sessions = props ? props.sessions : undefined
+      const detailed = useDetailedContent(sessions, sessionId)
+      const [hoveredLegend, setHoveredLegend] = React.useState(null)
+      const hoverLegend = (key, on) => setHoveredLegend((current) => (on ? key : current === key ? null : current))
       if (!open) return null
       return h('div', { style: S.panel },
         h('div', { style: S.panelCard, 'data-context-usage': 'panel' },
-          h(Body, { t, pressure, breakdown, usage, session })))
+          h(Body, { t, pressure, breakdown, usage, session, detailed, hoveredLegend, onLegendHover: hoverLegend })))
     }
 
     /**
@@ -763,6 +839,40 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Extract the conversation's model-visible message content from one event
+     * window: the most recent `user/message` and `assistant/message` texts in
+     * surface order, each trimmed, newest turn last.
+     * @param window - the session's event-window snapshot, absent when unbound.
+     * @returns rendered transcript text, or undefined with no window.
+     */
+    function conversationTextOf(window) {
+      if (window === undefined) return undefined
+      const lines = []
+      for (const entry of window.entries) {
+        const event = entry && entry.type === 'event' ? entry.event : undefined
+        if (event === undefined) continue
+        if (event.type === 'user/message') {
+          const content = event.data && event.data.message && event.data.message.content
+          if (!Array.isArray(content)) continue
+          const text = content
+            .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
+            .map((block) => block.text)
+            .join('')
+          if (text.trim().length > 0) lines.push(`[user] ${text.trim()}`)
+        } else if (event.type === 'assistant/message') {
+          const content = event.data && event.data.message && event.data.message.content
+          if (!Array.isArray(content)) continue
+          const text = content
+            .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
+            .map((block) => block.text)
+            .join('')
+          if (text.trim().length > 0) lines.push(`[assistant] ${text.trim()}`)
+        }
+      }
+      return lines.length === 0 ? '' : lines.join('\n\n')
+    }
+
+    /**
      * One hover-highlighted content section of the hover tooltip: the row
      * highlights and shows a chevron while the pointer rests on it; the full
      * content renders in a detached pane to the right (see {@link S.tipPane}),
@@ -799,22 +909,23 @@ window.__ModuleLoader__.load({
      */
     function ContextTip(props) {
       const t = props.t
-      const { pressure, breakdown, systemText, toolNames } = props
+      const { pressure, breakdown, systemText, toolNames, conversationText } = props
       const used = pressure === undefined ? undefined : pressure.projectedTokens ?? pressure.pressureTokens
       const capacity = pressure === undefined ? undefined : pressure.contextWindow
       const usedPercent = share(used, capacity)
       const total = breakdown === undefined ? 0 : breakdown.systemTokens + breakdown.toolsTokens + breakdown.messageTokens
       const [hoveredRow, setHoveredRow] = React.useState(null)
       const hover = (key, on) => setHoveredRow((current) => (on ? key : current === key ? null : current))
+      const CONTENT_BY_KEY = {
+        systemTokens: systemText === undefined || systemText === '' ? undefined : systemText,
+        toolsTokens: toolNames === undefined || toolNames.length === 0 ? undefined : toolNames.join('\n'),
+        messageTokens: conversationText === undefined || conversationText === '' ? undefined : conversationText,
+      }
       const rows = []
       let paneContent = undefined
       for (const row of ROWS) {
         const value = breakdown === undefined ? undefined : breakdown[row.key]
-        const content = row.key === 'systemTokens'
-          ? (systemText === undefined || systemText === '' ? undefined : systemText)
-          : row.key === 'toolsTokens'
-            ? (toolNames === undefined || toolNames.length === 0 ? undefined : toolNames.join('\n'))
-            : undefined
+        const content = CONTENT_BY_KEY[row.key]
         rows.push(h(TipSection, {
           key: row.key,
           kind: row.kind, label: t(row.label), color: row.color,
@@ -887,38 +998,9 @@ window.__ModuleLoader__.load({
       const pressure = read('contextPressure')
       const breakdown = read('contextBreakdown')
       const sessions = props ? props.sessions : undefined
-      /* Injected values are captured before the log head is paged in; re-read
-       * through the sessions service every render so a completed page pass
-       * (which bumps forceTick) picks up the fresh window. */
-      const [ , forceTick] = React.useState(0)
-      const [paging, setPaging] = React.useState(false)
-      let eventWindow = eventWindowOf(sessions, sessionId)
-      if (eventWindow !== undefined) {
-        let text = systemPromptTextOf(eventWindow)
-        if (text === '' && sessions !== undefined && typeof sessionId === 'string' && !HEAD_PAGER.has(sessionId)) {
-          const binding = sessions.binding(sessionId)
-          const session = binding === undefined ? undefined : binding.session
-          if (session !== undefined && session.getSnapshot().hasMore === true) {
-            const pass = pageToHead(session)
-            HEAD_PAGER.set(sessionId, pass)
-            setPaging(true)
-            pass.then(() => {
-              HEAD_PAGER.delete(sessionId)
-              forceTick((n) => n + 1)
-            })
-          }
-        }
-        if (text === '' && eventWindow !== undefined) {
-          const fresh = eventWindowOf(sessions, sessionId)
-          if (fresh !== undefined && fresh !== eventWindow) {
-            eventWindow = fresh
-            text = systemPromptTextOf(fresh)
-          }
-        }
-        systemText = text
-        toolNames = toolNamesOf(eventWindow)
-      }
-      void paging
+      const detailed = useDetailedContent(sessions, sessionId)
+      const systemText = detailed.systemText
+      const toolNames = detailed.toolNames
       const wrapStyle = Object.assign({}, S.toggle, { position: 'relative' })
       return h('div', { style: wrapStyle, 'data-context-usage': 'toggle-wrap' }, [
         h('button', {
@@ -936,7 +1018,7 @@ window.__ModuleLoader__.load({
           h(Ring, { key: 'ring', percent: usedPercent }),
           usedPercent === undefined ? null : h('span', { key: 'text' }, `${Math.round(usedPercent)}%`),
         ]),
-        tipOpen && !open ? h(ContextTip, { key: 'tip', t, pressure, breakdown, systemText, toolNames, onEnter: cancelTipClose, onLeave: leave }) : null,
+        tipOpen && !open ? h(ContextTip, { key: 'tip', t, pressure, breakdown, systemText, toolNames, conversationText: detailed.conversationText, onEnter: cancelTipClose, onLeave: leave }) : null,
       ])
     }
 
@@ -999,6 +1081,7 @@ window.__ModuleLoader__.load({
           id: 'context-usage',
           order: 5,
           locale: NS,
+          inject: (sessionId) => ({ sessions }),
         }, ContextUsagePanel))
 
         ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
